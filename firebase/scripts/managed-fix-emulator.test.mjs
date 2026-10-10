@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { initializeApp, deleteApp } from 'firebase/app';
+import { connectAuthEmulator, getAuth, signInWithEmailAndPassword } from 'firebase/auth';
+import { connectFirestoreEmulator, doc, getDoc, getFirestore } from 'firebase/firestore';
+import { connectFunctionsEmulator, getFunctions, httpsCallable } from 'firebase/functions';
+
+const canonical = (value) => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+const sha = (text) => createHash('sha256').update(text).digest('hex');
+const config = { apiKey: 'demo-api-key', authDomain: 'demo-sayspec-local.firebaseapp.com', projectId: 'demo-sayspec-local', appId: '1:123:web:demo' };
+function client(name) { const app = initializeApp(config, name); const auth = getAuth(app); const db = getFirestore(app); const functions = getFunctions(app, 'europe-west1');
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true }); connectFirestoreEmulator(db, '127.0.0.1', 8080); connectFunctionsEmulator(functions, '127.0.0.1', 5001); return { app, auth, db, functions }; }
+const owner = client(`fix-owner-${Date.now()}`); const reviewer = client(`fix-reviewer-${Date.now()}`); const outsider = client(`fix-outsider-${Date.now()}`);
+const scope = { organizationId: 'org_northstar', projectId: 'project_storefront', testId: 'import_fix_test' };
+const source = "import { test, expect } from '@playwright/test'; test('ready', async ({ page }) => { await expect(page.getByText('Ready')).toBeVisible(); });";
+const files = [{ id: 'file_one', relativePath: 'tests/ready.spec.ts', text: source, sha256: sha(source), byteLength: Buffer.byteLength(source), mimeType: 'text/typescript' }];
+const steps = [{ id: 'step_one', instruction: 'Open page', assertion: 'Ready visible', intentItemIds: [], transcriptSegmentIds: [], evidenceEventIds: [] }];
+const runtime = { framework: 'playwright', frameworkVersion: '1.63.0', entrypoint: files[0].relativePath, dependencies: { '@playwright/test': '1.63.0' }, requirements: ['Node.js >=22.12.0', 'Playwright Chromium installed'] };
+const baseContentHash = sha(canonical({ steps, files, runtime }));
+const bundle = { schemaVersion: 1, kind: 'sayspec-playwright-bundle', exportedAt: new Date().toISOString(), original: { testId: 'test_source', versionId: 'version_source', contentHash: baseContentHash, state: 'execution-validated' }, title: 'Ready', steps, files, runtime, secretPlaceholders: ['BASE_URL'], provenance: { provider: 'codex', cliVersion: 'fixture', inputRevisionHash: 'a'.repeat(64), generatedAt: new Date().toISOString() } };
+const attemptId = 'attempt_11111111-1111-4111-8111-111111111111'; const baseVersionId = 'version_local_one';
+const attempt = { schemaVersion: 1, id: attemptId, ...scope, versionId: baseVersionId, testVersionHash: baseContentHash, environmentHash: 'b'.repeat(64), executionManifestHash: 'c'.repeat(64), state: 'failed', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), summary: 'Failed locally.', detail: 'Expected Ready', passed: 0, failed: 1, skipped: 0, tests: [{ id: 'spec_one', title: 'ready', outcome: 'failed', durationMs: 100, errors: ['Expected Ready'] }], artifacts: [], runner: 'desktop-local' };
+const baseDecision = { ...scope, attemptId, analysisId: 'analysis_one', baseVersionId, baseContentHash, proposalHash: 'd'.repeat(64) };
+try {
+  await Promise.all([signInWithEmailAndPassword(owner.auth, 'tester@sayspec.local', 'local-only-password'), signInWithEmailAndPassword(reviewer.auth, 'reviewer@sayspec.local', 'local-only-password'), signInWithEmailAndPassword(outsider.auth, 'outsider@sayspec.local', 'local-only-password')]);
+  await httpsCallable(owner.functions, 'testPortableImport')({ ...scope, bundle });
+  await httpsCallable(owner.functions, 'testLocalAttemptRecord')({ ...scope, attempt });
+  const direct = await fetch('http://127.0.0.1:5001/demo-sayspec-local/europe-west1/managedFixReadAuthorize', { method: 'POST', headers: { Authorization: `Bearer ${await owner.auth.currentUser.getIdToken()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ data: scope }) });
+  assert.equal(direct.status, 200); assert.equal((await direct.json()).result.actorUid, 'user_tester');
+  await assert.rejects(httpsCallable(outsider.functions, 'managedFixReadAuthorize')(scope), /membership|permission|access/i);
+  await assert.rejects(httpsCallable(outsider.functions, 'managedFixDecide')({ ...baseDecision, proposalId: 'proposal_outsider', kind: 'approve' }), /membership|permission|authority/i);
+  await assert.rejects(httpsCallable(reviewer.functions, 'managedFixReadAuthorize')({ organizationId: 'org_rival', projectId: 'project_rival', testId: scope.testId }), /membership|permission|access/i);
+  const reviewerDecision = { ...baseDecision, proposalId: 'proposal_reviewer', kind: 'approve' };
+  assert.equal((await httpsCallable(reviewer.functions, 'managedFixDecide')(reviewerDecision)).data.actorUid, 'user_reviewer');
+  await assert.rejects(httpsCallable(owner.functions, 'managedFixApplyAuthorize')({ ...scope, proposalId: reviewerDecision.proposalId, baseContentHash, proposalHash: baseDecision.proposalHash }), /approval|permission/i);
+  await assert.rejects(httpsCallable(reviewer.functions, 'managedFixApplyAuthorize')({ ...scope, proposalId: reviewerDecision.proposalId, baseContentHash, proposalHash: 'e'.repeat(64) }), /approval|permission/i);
+  assert.equal((await httpsCallable(reviewer.functions, 'managedFixApplyAuthorize')({ ...scope, proposalId: reviewerDecision.proposalId, baseContentHash, proposalHash: baseDecision.proposalHash })).data.actorUid, 'user_reviewer');
+  await httpsCallable(owner.functions, 'memberChange')({ organizationId: scope.organizationId, uid: 'user_reviewer', status: 'revoked' });
+  await assert.rejects(httpsCallable(reviewer.functions, 'managedFixApplyAuthorize')({ ...scope, proposalId: reviewerDecision.proposalId, baseContentHash, proposalHash: baseDecision.proposalHash }), /permission|authority/i);
+  const ownerDecision = { ...baseDecision, proposalId: 'proposal_owner', kind: 'approve' };
+  await httpsCallable(owner.functions, 'managedFixDecide')(ownerDecision);
+  await assert.rejects(httpsCallable(owner.functions, 'managedFixDecide')({ ...ownerDecision, kind: 'reject' }), /different|already-exists/i);
+  const applied = { ...scope, proposalId: ownerDecision.proposalId, baseContentHash, proposalHash: baseDecision.proposalHash, versionId: 'version_local_two', versionNumber: 2, versionHash: 'f'.repeat(64) };
+  assert.equal((await httpsCallable(owner.functions, 'managedFixAppliedRecord')(applied)).data.contentHash, applied.versionHash);
+  assert.equal((await httpsCallable(owner.functions, 'managedFixAppliedRecord')(applied)).data.contentHash, applied.versionHash);
+  assert.equal((await httpsCallable(owner.functions, 'runLocalAuthorize')({ organizationId: scope.organizationId, projectId: scope.projectId, items: [{ testId: scope.testId, versionId: applied.versionId, contentHash: applied.versionHash }] })).data.authorized, true);
+  const rerun = { ...attempt, id: 'attempt_22222222-2222-4222-8222-222222222222', versionId: applied.versionId, testVersionHash: applied.versionHash, state: 'passed', summary: 'Fixed version passed locally.', passed: 1, failed: 0, tests: [{ id: 'spec_two', title: 'ready', outcome: 'passed', durationMs: 100, errors: [] }] };
+  assert.equal((await httpsCallable(owner.functions, 'testLocalAttemptRecord')({ ...scope, attempt: rerun })).data.clientReported, true);
+  await assert.rejects(httpsCallable(owner.functions, 'managedFixAppliedRecord')({ ...applied, versionId: 'version_forged' }), /another version|already-exists/i);
+  await assert.rejects(httpsCallable(owner.functions, 'managedFixApplyAuthorize')({ ...scope, proposalId: ownerDecision.proposalId, baseContentHash, proposalHash: baseDecision.proposalHash }), /changed|aborted/i);
+  assert.equal((await getDoc(doc(owner.db, `organizations/${scope.organizationId}/projects/${scope.projectId}/tests/${scope.testId}/versionAnchors/${applied.versionId}`))).data()?.contentHash, applied.versionHash);
+  await assert.rejects(getDoc(doc(outsider.db, `organizations/${scope.organizationId}/projects/${scope.projectId}/tests/${scope.testId}/fixProposals/${ownerDecision.proposalId}`)));
+  console.log(JSON.stringify({ decision: 'durable', forgedApproval: 'denied', revokedReviewer: 'denied', duplicateApply: 'idempotent', staleBase: 'denied', outsider: 'denied' }));
+} finally { await Promise.all([deleteApp(owner.app), deleteApp(reviewer.app), deleteApp(outsider.app)]); }

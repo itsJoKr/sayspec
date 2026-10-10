@@ -1,0 +1,138 @@
+{
+  "name": "@sayspec/desktop",
+  "version": "0.10.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "description": "SaySpec — AI test automation",
+  "author": "SaySpec",
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "postinstall": "node scripts/ensure-pty-helper.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:emulator": "SAYSPEC_ENV=emulator node scripts/dev.mjs",
+    "dev:live": "SAYSPEC_ENV=live SAYSPEC_DEBUG_BUILD=1 node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test electron/*.test.ts electron/jobs/*.test.ts electron/setup/*.test.ts electron/flutter/*.test.ts electron/execution/*.test.ts electron/coding-agent/*.test.ts electron/test-storage/*.test.ts",
+    "test:native": "node scripts/native-smoke.mjs",
+    "test:native:runs": "node scripts/runs-native.mjs",
+    "test:native:application-fix-android": "node --experimental-strip-types scripts/application-fix-android-native.mjs",
+    "test:native:application-fix-web": "node --experimental-strip-types scripts/application-fix-web-native.mjs",
+    "test:native:managed-fix": "node --experimental-strip-types scripts/managed-fix-native.mjs",
+    "test:native:recording": "node scripts/recording-native.mjs",
+    "test:native:transcription": "SAYSPEC_TRANSCRIPTION_SMOKE=1 node scripts/recording-native.mjs",
+    "test:native:generation": "SAYSPEC_GENERATION_SMOKE=1 node scripts/recording-native.mjs",
+    "test:capture": "node --experimental-strip-types --test electron/integration/*.integration.ts",
+    "test:transcription:real": "node --experimental-strip-types --test electron/transcription-real.integration.ts",
+    "test:model-download:real": "SAYSPEC_REAL_MODEL_DOWNLOAD=1 node --experimental-strip-types --test electron/model-download-real.integration.ts",
+    "test:agents:real": "SAYSPEC_REAL_AGENT_CLI=1 node --experimental-strip-types --test electron/coding-agent-real.integration.ts",
+    "test:generation:real": "SAYSPEC_REAL_GENERATION=1 node --experimental-strip-types --test electron/generation-real.integration.ts",
+    "test:packaged": "SAYSPEC_EXECUTABLE=release/mac-arm64/SaySpec.app/Contents/MacOS/SaySpec node scripts/native-smoke.mjs",
+    "test:packaged:auth": "SAYSPEC_EXECUTABLE=release/mac-arm64/SaySpec.app/Contents/MacOS/SaySpec SAYSPEC_AUTH_SMOKE=1 node scripts/native-smoke.mjs",
+    "test:packaged:auth-persist-in": "SAYSPEC_EXECUTABLE=release/mac-arm64/SaySpec.app/Contents/MacOS/SaySpec SAYSPEC_AUTH_SMOKE=1 SAYSPEC_AUTH_PERSIST_PHASE=sign-in node scripts/native-smoke.mjs",
+    "test:packaged:auth-persist-out": "SAYSPEC_EXECUTABLE=release/mac-arm64/SaySpec.app/Contents/MacOS/SaySpec SAYSPEC_AUTH_SMOKE=1 SAYSPEC_AUTH_PERSIST_PHASE=restore node scripts/native-smoke.mjs",
+    "build": "npm run typecheck && vite build && node scripts/build-electron.mjs",
+    "build:emulator": "SAYSPEC_ENV=emulator npm run build",
+    "build:live": "SAYSPEC_ENV=live npm run build",
+    "build:live:debug": "SAYSPEC_ENV=live SAYSPEC_DEBUG_BUILD=1 npm run build",
+    "start": "electron .",
+    "package": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "package:emulator": "SAYSPEC_ENV=emulator npm run package",
+    "test:native:managed-fix:pro": "node --experimental-strip-types scripts/managed-fix-pro-native.mjs",
+    "test:native:flutter-capture": "node --experimental-strip-types scripts/flutter-capture-native.mjs",
+    "test:native:flutter-capture-ios": "node --experimental-strip-types scripts/flutter-capture-ios-native.mjs",
+    "test:native:patrol-ios": "SAYSPEC_E04_PLATFORM=ios node --experimental-strip-types scripts/patrol-run-native.mjs",
+    "test:native:flutter-narration": "node --experimental-strip-types scripts/flutter-narration-native.mjs",
+    "test:native:patrol": "node --experimental-strip-types scripts/patrol-run-native.mjs",
+    "test:native:patrol-candidate": "node --experimental-strip-types scripts/patrol-candidate-native.mjs",
+    "test:patrol-generation:real": "node --experimental-strip-types scripts/patrol-generation-real.mjs",
+    "test:native:e07": "node --experimental-strip-types scripts/flutter-e07-electron.mjs",
+    "release:mac": "SAYSPEC_AUTO_UPDATES=1 npm run build:live && electron-builder --mac --arm64 --publish always"
+  },
+  "dependencies": {
+    "@playwright/test": "1.63.0",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "@sayspec/contracts": "0.0.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron-updater": "^6.8.9",
+    "firebase": "^12.19.0",
+    "node-pty": "^1.1.0",
+    "playwright-core": "^1.63.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "build": {
+    "appId": "app.sayspec.desktop",
+    "productName": "SaySpec",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "!**/node_modules/node-pty/prebuilds/win32-*/**",
+      "!**/node_modules/node-pty/prebuilds/darwin-x64/**"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "asarUnpack": [
+      "**/node-pty/**",
+      "**/@playwright/test/**",
+      "**/playwright/**",
+      "**/playwright-core/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "minimumSystemVersion": "12.0",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "SaySpec records narration only after you explicitly start a test recording."
+      },
+      "sign": "./build/sign.cjs"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "itsJoKr",
+        "repo": "sayspec-releases",
+        "releaseType": "draft"
+      }
+    ],
+    "dmg": {
+      "artifactName": "SaySpec-${arch}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "44.4.3",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

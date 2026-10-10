@@ -1,0 +1,27 @@
+name: sayspec_flutter_recorder
+description: SaySpec Flutter recording SDK. Emits widget-level interaction evidence that SaySpec turns into Patrol tests.
+version: 0.12.0
+homepage: https://sayspec.app
+
+topics:
+  - testing
+  - flutter
+  - automation
+  - qa
+
+platforms:
+  android:
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+  flutter: ">=3.32.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

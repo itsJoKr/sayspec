@@ -1,0 +1,25 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function activeMember(orgId) {
+      return request.auth != null &&
+        firestore.exists(/databases/(default)/documents/organizations/$(orgId)/members/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/organizations/$(orgId)/members/$(request.auth.uid)).data.status == 'active';
+    }
+    function projectAccess(orgId, projectId) {
+      return activeMember(orgId) && (
+        firestore.get(/databases/(default)/documents/organizations/$(orgId)/members/$(request.auth.uid)).data.role in ['owner', 'admin'] ||
+        firestore.get(/databases/(default)/documents/organizations/$(orgId)/projects/$(projectId)).data.access == 'all-members' ||
+        firestore.exists(/databases/(default)/documents/organizations/$(orgId)/projects/$(projectId)/grants/$(request.auth.uid))
+      );
+    }
+    match /organizations/{orgId}/projects/{projectId}/{kind}/{objectId}/{artifactId} {
+      allow read: if projectAccess(orgId, projectId);
+      allow write: if projectAccess(orgId, projectId)
+        && request.resource.size <= 20 * 1024 * 1024
+        && request.resource.metadata.organizationId == orgId
+        && request.resource.metadata.projectId == projectId;
+    }
+    match /{allPaths=**} { allow read, write: if false; }
+  }
+}

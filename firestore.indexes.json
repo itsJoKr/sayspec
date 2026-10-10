@@ -1,0 +1,9 @@
+{
+  "indexes": [
+    { "collectionGroup": "tests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "tags", "arrayConfig": "CONTAINS" }, { "fieldPath": "normalizedTitle", "order": "ASCENDING" }] },
+    { "collectionGroup": "tests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "ownerUid", "order": "ASCENDING" }, { "fieldPath": "normalizedTitle", "order": "ASCENDING" }] },
+    { "collectionGroup": "tests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "normalizedTitle", "order": "ASCENDING" }] },
+    { "collectionGroup": "tests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "folder", "order": "ASCENDING" }, { "fieldPath": "normalizedTitle", "order": "ASCENDING" }] }
+  ],
+  "fieldOverrides": []
+}

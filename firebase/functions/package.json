@@ -1,0 +1,20 @@
+{
+  "name": "@sayspec/functions",
+  "version": "0.0.1",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": { "node": "22" },
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.4.0",
+    "firebase-functions": "^7.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

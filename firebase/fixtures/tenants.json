@@ -1,0 +1,21 @@
+{
+  "projectId": "demo-sayspec-local",
+  "password": "local-only-password",
+  "organizations": [
+    {
+      "id": "org_northstar",
+      "name": "Northstar QA (synthetic)",
+      "members": [
+        { "uid": "user_tester", "email": "tester@sayspec.local", "displayName": "Taylor Tester", "role": "owner" },
+        { "uid": "user_reviewer", "email": "reviewer@sayspec.local", "displayName": "Riley Reviewer", "role": "reviewer" }
+      ]
+    },
+    {
+      "id": "org_rival",
+      "name": "Rival Labs (synthetic)",
+      "members": [
+        { "uid": "user_outsider", "email": "outsider@sayspec.local", "displayName": "Casey Outsider", "role": "owner" }
+      ]
+    }
+  ]
+}

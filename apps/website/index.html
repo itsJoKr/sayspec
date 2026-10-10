@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="description" content="Turn the manual tests you already run into reusable automated tests, then use AI to understand failures and propose reviewed fixes." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="SaySpec" />
+    <meta property="og:title" content="Still testing by hand? Welcome to the AI era. | SaySpec" />
+    <meta property="og:description" content="Turn manual QA walkthroughs into automated tests. Show it, say it, and run it again with SaySpec for Mac." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Still testing by hand? Welcome to the AI era. | SaySpec" />
+    <meta name="twitter:description" content="Turn manual QA walkthroughs into automated tests. Show it, say it, and run it again with SaySpec for Mac." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>SaySpec | Turn manual testing into automation</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <a class="wordmark" href="#top" aria-label="SaySpec home">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span>SaySpec</span>
+      </a>
+      <div class="header-actions">
+        <a class="header-contact" href="mailto:contact@joe-it-solutions.com">Contact us</a>
+        <a class="button button-small" data-get-app-link href="/get-app">Get SaySpec app</a>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero section" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="signal-dot" aria-hidden="true"></span>Turn manual QA walkthroughs into automated tests.</p>
+          <h1>Still testing by hand?<br /><span class="accent">Welcome to the AI era.</span></h1>
+          <p class="hero-lede">You already know how to test your app. Show SaySpec what you do and turn that walkthrough into a reusable automated test.</p>
+          <div class="hero-actions">
+            <a class="button" data-get-app-link href="/get-app">Get SaySpec app</a>
+            <a class="text-link" href="#how-it-works">See how it works <span aria-hidden="true">↓</span></a>
+          </div>
+        </div>
+
+        <div class="workflow-preview" aria-label="SaySpec workflow showing narration becoming automated test steps">
+          <div class="preview-label"><span>With SaySpec</span><span>00:18</span></div>
+          <div class="narration-card">
+            <div class="recording-status"><span class="recording-dot" aria-hidden="true"></span> Recording walkthrough</div>
+            <div class="audio-wave" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <blockquote>“Apply the SAVE20 coupon. The cart total should decrease by $20.”</blockquote>
+          </div>
+          <div class="transformation" aria-hidden="true"><span></span><b>becomes</b><span></span></div>
+          <div class="test-card">
+            <div class="test-card-heading"><span>Cart coupon discount test</span></div>
+            <ol class="test-steps">
+              <li><span>1</span><p>Add the <strong>$80 item</strong> to the cart</p><b>Action</b></li>
+              <li><span>2</span><p>Apply coupon <strong>SAVE20</strong></p><b>Action</b></li>
+              <li><span>3</span><p>Cart total decreases by <strong>$20</strong></p><b>Check</b></li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <section class="how section" id="how-it-works" aria-labelledby="how-title">
+        <div class="section-intro">
+          <div>
+            <p class="section-number">How it works</p>
+            <h2 id="how-title">Do your test.<br /><span class="accent">Just record it this time.</span></h2>
+          </div>
+        </div>
+
+        <ol class="process-grid">
+          <li class="process-step">
+            <h3>Show it.</h3>
+            <p>Walk through the flow you already test.</p>
+            <div class="mini-window" aria-label="Illustrative shopping cart with an applied coupon">
+              <div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span>shop.example/cart</span></div>
+              <div class="cart-summary">
+                <div class="cart-line"><span>Cart subtotal</span><strong>$80</strong></div>
+                <div class="cart-line coupon-line"><span>Coupon · SAVE20</span><strong>−$20</strong></div>
+              </div>
+              <div class="cursor-action"><span aria-hidden="true">↖</span> Apply coupon</div>
+            </div>
+          </li>
+          <li class="process-step">
+            <h3>Say it.</h3>
+            <p>Explain what matters and what you expect to happen.</p>
+            <div class="quote-panel">
+              <div class="audio-wave audio-wave-small" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <blockquote>“After I apply SAVE20, the cart total should decrease by $20.”</blockquote>
+            </div>
+          </li>
+          <li class="process-step">
+            <h3>Run it again.</h3>
+            <p>You just gained a new end-to-end automated test.</p>
+            <div class="saved-test">
+              <span class="saved-icon" aria-hidden="true">✓</span>
+              <div><b>Coupon reduces cart total</b><small>3 steps · Web</small></div>
+              <span class="saved-state">Ready to review</span>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="repeat section" aria-labelledby="repeat-title">
+        <p class="section-number">Regression runs</p>
+        <div class="repeat-main">
+          <h2 id="repeat-title">Make your next regression <span class="accent">automated.</span></h2>
+          <div class="repeat-detail">
+            <p>Don’t start your next regression run from scratch. Run the tests you recorded and review the results.</p>
+            <div class="test-runner" role="img" aria-label="Illustrative test run with 17 tests passed, 2 tests failed, and AI analysis running">
+              <div class="test-runner-head">
+                <div>
+                  <small>Regression suite</small>
+                  <strong>Release candidate</strong>
+                </div>
+                <span class="running-state"><i aria-hidden="true"></i>Running tests</span>
+              </div>
+              <div class="run-results">
+                <div class="run-result passed"><strong>17</strong><span>Passed</span></div>
+                <div class="run-result failed"><strong>2</strong><span>Failed</span></div>
+              </div>
+              <div class="analysis-status">
+                <span class="analysis-spinner" aria-hidden="true"></span>
+                <div><strong>AI analysis is running</strong><small>Reviewing failed test evidence</small></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="fix section" id="failure-to-fix" aria-labelledby="fix-title">
+        <p class="section-number">From failure to fix</p>
+        <div class="fix-main">
+          <div class="fix-copy">
+            <h2 id="fix-title">A failed test should start a fix. <span class="accent">Not another handoff.</span></h2>
+            <p>SaySpec uses AI to analyze the run and prepare a fix. Instead of opening a task and handing it off, QA can review the change and open a pull request, shortening the feedback loop.</p>
+          </div>
+
+          <ol class="fix-flow" aria-label="Failure to fix workflow">
+            <li><span>01</span><div><small>Evidence</small><b>Run report</b></div></li>
+            <li><span>02</span><div><small>AI review</small><b>Failure analysis</b></div></li>
+            <li><span>03</span><div><small>Review</small><b>Proposed change</b></div></li>
+            <li class="approval-step"><span>04</span><div><small>Decision</small><b>Your approval</b></div></li>
+            <li><span>05</span><div><small>Next run</small><b>Rerun or open a PR</b></div></li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="qa-next section" aria-labelledby="qa-next-title">
+        <p class="section-number">QA’s next step</p>
+        <div>
+          <h2 id="qa-next-title">You found the bug.<br /><span class="accent">Now help ship the fix.</span></h2>
+          <p>Make QA a steady contributor to your development workflow, from reproducing issues to reviewing proposed changes and opening pull requests.</p>
+          <div class="ai-tools-inline">
+            <p><strong>Bring your own AI.</strong> Works with Claude, Codex, and others. Your data stays within the AI tools you manage.</p>
+            <div class="provider-badges" aria-label="Compatible AI tools">
+              <span><img src="/brands/claude.svg" alt="" />Claude</span>
+              <span><img src="/brands/chatgpt.svg" alt="" />ChatGPT</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing section" id="download" aria-labelledby="closing-title">
+        <div class="closing-copy">
+          <p class="eyebrow light"><span class="signal-dot" aria-hidden="true"></span>Get SaySpec</p>
+          <h2 id="closing-title">Get SaySpec and record your first test.</h2>
+          <p>Turn the walkthrough you already perform into reusable automation.</p>
+          <a class="button button-light" data-get-app-link href="/get-app">Get SaySpec app</a>
+        </div>
+
+        <div class="faq">
+          <h3>Questions, answered.</h3>
+          <details>
+            <summary>How do I get started?<span aria-hidden="true">+</span></summary>
+            <p>Get the desktop app, create your workspace, and record the manual test you already run.</p>
+          </details>
+          <details>
+            <summary>Do I need to write code?<span aria-hidden="true">+</span></summary>
+            <p>The goal is to let you begin with the manual workflow you already know. You review readable test steps before saving and running the automation.</p>
+          </details>
+          <details>
+            <summary>Can AI change my app without approval?<span aria-hidden="true">+</span></summary>
+            <p>No. SaySpec is designed so proposed fixes must be reviewed and explicitly approved before they are applied.</p>
+          </details>
+          <details>
+            <summary>Which platforms are supported?<span aria-hidden="true">+</span></summary>
+            <p>The SaySpec desktop app is being prepared for Mac only for now.</p>
+          </details>
+        </div>
+      </section>
+
+    </main>
+
+    <footer>
+      <a class="wordmark wordmark-footer" href="#top" aria-label="SaySpec home">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span>SaySpec</span>
+      </a>
+      <p>Show. Say. Verify.</p>
+      <p><a class="footer-contact" href="mailto:contact@joe-it-solutions.com">Contact us</a> · © 2026 SaySpec</p>
+    </footer>
+  </body>
+</html>

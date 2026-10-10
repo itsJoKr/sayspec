@@ -1,0 +1,10 @@
+{
+  "name": "sayspec-web-sample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local storefront fixture for SaySpec Web and Playwright QA",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  }
+}

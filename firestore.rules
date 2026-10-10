@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function member(orgId) { return get(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)); }
+    function activeMember(orgId) { return signedIn() && member(orgId).data.status == 'active'; }
+    function project(orgId, projectId) { return get(/databases/$(database)/documents/organizations/$(orgId)/projects/$(projectId)); }
+    function projectAccess(orgId, projectId) {
+      return activeMember(orgId) && (
+        member(orgId).data.role in ['owner', 'admin'] ||
+        project(orgId, projectId).data.access == 'all-members' ||
+        exists(/databases/$(database)/documents/organizations/$(orgId)/projects/$(projectId)/grants/$(request.auth.uid))
+      );
+    }
+
+    match /organizations/{orgId} {
+      allow read: if activeMember(orgId);
+      allow write: if false;
+
+      match /members/{uid} {
+        allow read: if activeMember(orgId);
+        allow write: if false;
+      }
+      match /invitations/{inviteId} {
+        allow read: if activeMember(orgId) && member(orgId).data.role in ['owner', 'admin'];
+        allow write: if false;
+      }
+      // The current company code: active owners/admins only. The global
+      // joinCodes/{code} lookup, audit events and rate-limit counters stay
+      // server-only through the catch-all below.
+      match /private/{docId} {
+        allow get: if docId == 'joinCode' && activeMember(orgId) && member(orgId).data.role in ['owner', 'admin'];
+        allow list, write: if false;
+      }
+      match /projects/{projectId} {
+        allow read: if projectAccess(orgId, projectId);
+        allow write: if false;
+
+        match /grants/{uid} {
+          allow read: if projectAccess(orgId, projectId);
+          allow write: if false;
+        }
+        match /{document=**} {
+          allow read: if projectAccess(orgId, projectId);
+          allow write: if false;
+        }
+      }
+    }
+    match /userScopes/{uid}/organizations/{orgId} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+
+      match /projects/{projectId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if false;
+      }
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

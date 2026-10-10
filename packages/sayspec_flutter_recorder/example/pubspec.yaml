@@ -1,0 +1,18 @@
+name: sayspec_flutter_recorder_example
+description: Demonstrates integrating the SaySpec Flutter recorder.
+publish_to: none
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sayspec_flutter_recorder:
+    path: ..
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
