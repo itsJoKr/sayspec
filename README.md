@@ -1,4 +1,8 @@
-# SaySpec
+<p align="center">
+  <img src="apps/desktop/build/icon.svg" alt="SaySpec logo" width="128" height="128">
+</p>
+
+<h1 align="center">SaySpec</h1>
 
 SaySpec turns a narrated manual QA walkthrough into an automated test. You click through your app while saying what should happen. SaySpec records the actions and screenshots and transcribes your narration on your Mac. Your own coding agent (Claude Code or Codex) then writes and runs a Playwright or Patrol test from it in an embedded terminal. Saved tests run again on demand. When one fails, SaySpec explains the failure and proposes a fix, which is applied only after you approve it.
 
