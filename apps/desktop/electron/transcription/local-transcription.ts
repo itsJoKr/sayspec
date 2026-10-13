@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { LocalTranscript, LocalTranscriptSegment, LocalTranscriptionLifecycleEvent, RecordingEvent, RecordingSegment } from '@sayspec/contracts';
+import type { LocalTranscript, LocalTranscriptSegment, LocalTranscriptionLifecycleEvent, RecordingEvent, RecordingSegment, TranscriptRevision } from '@sayspec/contracts';
 import { RecordingStore } from '../recording-store.ts';
 import { LocalModelManager } from './model-manager.ts';
 import type { CaptureTranscriptionInput, TranscriptionProvider } from './provider.ts';
 
-type WhisperJson = {
+export type WhisperJson = {
   result?: { language?: unknown };
   transcription?: Array<{ offsets?: { from?: unknown; to?: unknown }; text?: unknown }>;
 };
@@ -29,12 +29,14 @@ export function normalizeWhisperSegments(input: WhisperJson, recordingSegment: R
   return normalizeWhisperTimeline(input, recordingSegment, events.filter((event) => event.segmentId === recordingSegment.id).map((event) => ({ id: event.id, elapsedMs: event.elapsedMs })));
 }
 
-export function normalizeWhisperTimeline(input: WhisperJson, recordingSegment: RecordingSegment, events: readonly { id: string; elapsedMs: number }[]) {
+/** Also aligns cloud transcripts, which pass their own timing uncertainty and revision source. */
+export function normalizeWhisperTimeline(input: WhisperJson, recordingSegment: RecordingSegment, events: readonly { id: string; elapsedMs: number }[], options: { uncertaintyMs?: number; source?: TranscriptRevision['source'] } = {}) {
   const raw = Array.isArray(input.transcription) ? input.transcription : [];
   const captureDuration = recordingSegment.endMs - recordingSegment.startMs;
   // The final spoken word may precede a long stretch of silence. That gap is
   // not clock uncertainty and must not be presented to the coding agent as one.
-  const uncertainty = 100;
+  const uncertainty = options.uncertaintyMs ?? 100;
+  const source = options.source ?? 'whisper';
   const output: LocalTranscriptSegment[] = [];
   for (const item of raw) {
     const text = cleanWhisperText(item.text); if (!text) continue;
@@ -50,7 +52,7 @@ export function normalizeWhisperTimeline(input: WhisperJson, recordingSegment: R
     output.push({
       id: `transcript_segment_${randomUUID()}`, recordingSegmentId: recordingSegment.id,
       startMs, endMs, timingUncertaintyMs: uncertainty, originalText: text, text,
-      revisions: [{ id: `revision_${randomUUID()}`, text, editedAt: now, source: 'whisper' }], evidenceEventIds,
+      revisions: [{ id: `revision_${randomUUID()}`, text, editedAt: now, source }], evidenceEventIds,
     });
   }
   return { language: typeof input.result?.language === 'string' ? input.result.language : undefined, segments: output };
@@ -89,6 +91,8 @@ export class LocalTranscriptionManager implements TranscriptionProvider {
     this.#jobs.set(input.captureId, holder); return holder.promise;
   }
 
+  running(recordingId: string) { return this.#jobs.has(recordingId); }
+
   async cancel(recordingId: string) {
     const job = this.#jobs.get(recordingId);
     if (job) { job.controller.abort(); job.process?.kill('SIGTERM'); return job.promise; }
@@ -125,8 +129,7 @@ export class LocalTranscriptionManager implements TranscriptionProvider {
         this.#emit(recordingId, 'running', index / Math.max(1, audioSegments.length), `Decoding audio segment ${index + 1} of ${audioSegments.length} locally…`);
         await this.#run(ready.converterPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', source, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], job);
         const levelOutput = await this.#run(ready.converterPath, ['-hide_banner', '-i', wav, '-af', 'volumedetect', '-f', 'null', '-'], job);
-        const peak = levelOutput.match(/max_volume:\s*(-?inf|-?\d+(?:\.\d+)?)\s*dB/i)?.[1];
-        if (peak === '-inf' || (peak !== undefined && Number(peak) <= -60)) {
+        if (silentAudio(levelOutput)) {
           warnings.push(`No speech signal was detected in ${recordingSegment.id}; Whisper inference was skipped to avoid inventing text for silence.`);
           continue;
         }
@@ -190,11 +193,10 @@ export class LocalTranscriptionManager implements TranscriptionProvider {
       const wav = path.join(temporary, 'narration.wav');
       await this.#run(ready.converterPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', input.audioPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], job);
       const levelOutput = await this.#run(ready.converterPath, ['-hide_banner', '-i', wav, '-af', 'volumedetect', '-f', 'null', '-'], job);
-      const peak = levelOutput.match(/max_volume:\s*(-?inf|-?\d+(?:\.\d+)?)\s*dB/i)?.[1];
       const warnings: string[] = [];
       let segments: LocalTranscriptSegment[] = [];
       let language: string | undefined;
-      if (peak === '-inf' || (peak !== undefined && Number(peak) <= -60)) {
+      if (silentAudio(levelOutput)) {
         warnings.push('No speech signal was detected in the Flutter narration; Whisper inference was skipped to avoid inventing text for silence.');
       } else {
         const outputPrefix = path.join(temporary, 'flutter-transcript');
@@ -227,28 +229,39 @@ export class LocalTranscriptionManager implements TranscriptionProvider {
   }
 
   #run(executable: string, args: string[], job: { controller: AbortController; process?: ChildProcess }, onProgress?: (progress: number) => void) {
-    return new Promise<string>((resolve, reject) => {
-      if (job.controller.signal.aborted) { reject(new DOMException('Canceled', 'AbortError')); return; }
-      const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'] }); job.process = child;
-      let output = ''; let settled = false;
-      const capture = (chunk: Buffer) => {
-        output = `${output}${String(chunk)}`.slice(-128 * 1024);
-        for (const match of String(chunk).matchAll(/progress\s*=\s*(\d+)%/gi)) onProgress?.(Math.max(0, Math.min(1, Number(match[1]) / 100)));
-      };
-      child.stdout?.on('data', capture); child.stderr?.on('data', capture);
-      const abort = () => child.kill('SIGTERM'); job.controller.signal.addEventListener('abort', abort, { once: true });
-      child.once('error', (error) => { if (!settled) { settled = true; reject(error); } });
-      child.once('close', (code) => {
-        job.controller.signal.removeEventListener('abort', abort); job.process = undefined;
-        if (settled) return; settled = true;
-        if (job.controller.signal.aborted) reject(new DOMException('Canceled', 'AbortError'));
-        else if (code === 0) resolve(output);
-        else reject(new Error(`${path.basename(executable)} exited with code ${code ?? 'unknown'}: ${output.trim().slice(-2_000)}`));
-      });
-    });
+    return runAudioTool(executable, args, job, onProgress);
   }
 
   #emit(recordingId: string, state: LocalTranscript['status'], progress: number, message: string) {
     this.#onLifecycle({ kind: 'transcription', state, progress: Math.max(0, Math.min(1, progress)), message, recordingId });
   }
+}
+
+/** Runs FFmpeg or whisper.cpp for a cancelable job; resolves with the tail of its output. */
+export function runAudioTool(executable: string, args: string[], job: { controller: AbortController; process?: ChildProcess }, onProgress?: (progress: number) => void) {
+  return new Promise<string>((resolve, reject) => {
+    if (job.controller.signal.aborted) { reject(new DOMException('Canceled', 'AbortError')); return; }
+    const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'] }); job.process = child;
+    let output = ''; let settled = false;
+    const capture = (chunk: Buffer) => {
+      output = `${output}${String(chunk)}`.slice(-128 * 1024);
+      for (const match of String(chunk).matchAll(/progress\s*=\s*(\d+)%/gi)) onProgress?.(Math.max(0, Math.min(1, Number(match[1]) / 100)));
+    };
+    child.stdout?.on('data', capture); child.stderr?.on('data', capture);
+    const abort = () => child.kill('SIGTERM'); job.controller.signal.addEventListener('abort', abort, { once: true });
+    child.once('error', (error) => { if (!settled) { settled = true; reject(error); } });
+    child.once('close', (code) => {
+      job.controller.signal.removeEventListener('abort', abort); job.process = undefined;
+      if (settled) return; settled = true;
+      if (job.controller.signal.aborted) reject(new DOMException('Canceled', 'AbortError'));
+      else if (code === 0) resolve(output);
+      else reject(new Error(`${path.basename(executable)} exited with code ${code ?? 'unknown'}: ${output.trim().slice(-2_000)}`));
+    });
+  });
+}
+
+/** Whether FFmpeg's volumedetect output shows digital silence, which speech models turn into invented text. */
+export function silentAudio(volumedetectOutput: string) {
+  const peak = volumedetectOutput.match(/max_volume:\s*(-?inf|-?\d+(?:\.\d+)?)\s*dB/i)?.[1];
+  return peak === '-inf' || (peak !== undefined && Number(peak) <= -60);
 }

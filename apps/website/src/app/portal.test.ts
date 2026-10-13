@@ -116,7 +116,7 @@ test('plan kind: Free and Pro are explicit; Beta, the old free-beta and missing 
 });
 
 test('desktop download: only HTTPS URLs and root-relative paths are offered', () => {
-  const dmg = 'https://github.com/itsJoKr/sayspec-releases/releases/latest/download/SaySpec-arm64.dmg';
+  const dmg = 'https://github.com/itsJoKr/sayspec/releases/latest/download/SaySpec-arm64.dmg';
   assert.deepEqual(resolveDesktopDownload(dmg), { available: true, url: dmg });
   assert.deepEqual(resolveDesktopDownload(' /downloads/SaySpec.dmg '), { available: true, url: '/downloads/SaySpec.dmg' });
   for (const value of [undefined, '', '  ', 'http://example.com/a.dmg', '//evil.example/a.dmg', 'javascript:alert(1)', 'SaySpec.dmg']) {

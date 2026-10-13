@@ -9,6 +9,7 @@ import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/
 import { acceptInvitation, archiveTest, setProjectTestStorage, setProjectTestInstructions, assignTestReviewer, authorizeApplicationFixApply, authorizeApplicationFixRead, authorizeLocalRun, authorizeManagedFixApply, authorizeManagedFixRead, beginFlutterSliceShare, beginRecordingShare, changeMemberRole, commentOnTest, CommandError, configureProject, createInvitation, createOrganization, createProject, createTestDraft, decideApplicationFix, decideManagedFix, deleteProject, finalizeFlutterSliceShare, finalizeRecordingShare, importPortableTest, moveTestToSuite, publishTestDraft, readFlutterSliceShare, recordApplicationFixApplied, recordLocalRun, recordLocalTestAttempt, recordManagedFixApplied, renameTest, saveSuite, saveTestDraft, setProjectGrant, type Actor } from './commands.js';
 
 import { DEFAULT_FREE_BETA_SEAT_LIMIT, recordRedeemOutcome, redeemJoinCode, reserveRedeemAttempt, rotateJoinCode, setDefaultPlanSource, setJoinCodeEnabled, setSeatLimitSource, syncMemberDirectory } from './membership.js';
+import { emulatorTranscriber, transcribeNarration, vertexGeminiTranscriber } from './transcription.js';
 
 // Co-located with the eur3 Firestore database. The desktop renderer, desktop
 // main process and portal all call this region explicitly.
@@ -28,6 +29,14 @@ setDefaultPlanSource(() => defaultOrganizationPlan.value());
 // desktop join callable has no supported App Check attestation provider and is
 // protected by authentication plus per-account/per-address rate limits instead.
 const portalAppCheck = defineBoolean('PORTAL_APP_CHECK_ENFORCE', { description: 'Require App Check tokens on portal team callables (joinCodeRotate, joinCodeSetEnabled, memberDirectorySync).' });
+// Gemini narration transcription (Beta and Pro). Vertex AI is called as the
+// function's service account; no API key is configured anywhere.
+const transcriptionModel = defineString('GEMINI_TRANSCRIPTION_MODEL', { default: 'gemini-3.5-flash', description: 'Vertex AI Gemini model used for narration transcription.' });
+const transcriptionLocation = defineString('GEMINI_TRANSCRIPTION_LOCATION', { default: 'europe-west3', description: "Vertex AI location of the transcription model ('global' or a region that offers the model)." });
+const transcriptionMonthlyMinutes = defineInt('TRANSCRIPTION_MONTHLY_MINUTES', { default: 600, description: 'Gemini transcription minutes per workspace per calendar month (UTC).' });
+const transcriptionMaxInstances = defineInt('TRANSCRIPTION_MAX_INSTANCES', { default: 5, description: 'Upper bound on concurrently running transcription instances; caps provider spend under load.' });
+// The emulator never reaches a provider; the stand-in only exists for demo- projects.
+const emulatedTranscription = process.env.FUNCTIONS_EMULATOR === 'true' && (process.env.GCLOUD_PROJECT ?? '').startsWith('demo-');
 
 function actor(request: CallableRequest<unknown>): Actor {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in is required.');
@@ -133,3 +142,7 @@ export const recordingShareFinalize = onCall((request) => invoke(() => finalizeR
 export const flutterSliceShareBegin = onCall((request) => invoke(() => beginFlutterSliceShare(db, actor(request), request.data)));
 export const flutterSliceShareFinalize = onCall((request) => invoke(() => finalizeFlutterSliceShare(db, actor(request), request.data, objectMetadata)));
 export const flutterSliceShareRead = onCall((request) => invoke(() => readFlutterSliceShare(db, actor(request), request.data)));
+export const narrationTranscribe = onCall({ maxInstances: transcriptionMaxInstances, concurrency: 10, cpu: 1, memory: '1GiB', timeoutSeconds: 540 }, (request) => invoke(() => transcribeNarration(db, actor(request), request.data, {
+  transcribe: emulatedTranscription ? emulatorTranscriber : vertexGeminiTranscriber({ projectId: process.env.GCLOUD_PROJECT ?? getApp().options.projectId ?? '', location: transcriptionLocation.value(), model: transcriptionModel.value() }),
+  model: emulatedTranscription ? 'emulator' : transcriptionModel.value(), monthlyMinutes: transcriptionMonthlyMinutes.value(),
+})));

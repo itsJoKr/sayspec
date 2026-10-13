@@ -3,7 +3,7 @@
  *
  * /get-app offers the Mac download only when the build sets
  * `VITE_DESKTOP_DOWNLOAD_URL` to a signed, notarized release (the live build
- * points at the public itsJoKr/sayspec-releases "latest" asset). Only HTTPS
+ * points at the "latest" asset of the itsJoKr/sayspec GitHub releases). Only HTTPS
  * URLs and root-relative paths are accepted; anything else, or no value, keeps
  * the honest "Download coming soon" state.
  */

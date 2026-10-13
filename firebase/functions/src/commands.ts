@@ -11,7 +11,7 @@ type ShareableRecordingManifest = {
 export type Role = 'owner' | 'admin' | 'editor' | 'reviewer' | 'viewer';
 export interface Actor { uid: string; email?: string; displayName?: string; }
 export class CommandError extends Error {
-  readonly code: 'invalid-argument' | 'permission-denied' | 'not-found' | 'already-exists' | 'failed-precondition' | 'aborted' | 'resource-exhausted';
+  readonly code: 'invalid-argument' | 'permission-denied' | 'not-found' | 'already-exists' | 'failed-precondition' | 'aborted' | 'resource-exhausted' | 'unavailable';
   /** Stable machine-readable details (for example `{ reason: 'seats-full' }`); never secrets or codes. */
   readonly details?: Record<string, unknown>;
   constructor(code: CommandError['code'], message: string, details?: Record<string, unknown>) { super(message); this.name = 'CommandError'; this.code = code; this.details = details; }
@@ -112,7 +112,7 @@ async function requireAuthor(tx: Transaction, db: Firestore, orgId: string, acto
   if (!member.exists || data?.status !== 'active' || !roles.includes(data.role)) throw new CommandError('permission-denied', publish ? 'Publishing requires reviewer authority.' : 'Authoring requires editor authority.');
   return data as { role: Role };
 }
-async function requireProjectAuthor(tx: Transaction, db: Firestore, orgId: string, projectId: string, actor: Actor, publish = false) {
+export async function requireProjectAuthor(tx: Transaction, db: Firestore, orgId: string, projectId: string, actor: Actor, publish = false) {
   const membership = await requireAuthor(tx, db, orgId, actor, publish);
   const project = await tx.get(projectRef(db, orgId, projectId));
   if (!project.exists) throw new CommandError('not-found', 'Project does not exist.');

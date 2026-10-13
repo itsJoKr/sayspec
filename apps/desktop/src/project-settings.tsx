@@ -132,7 +132,7 @@ export function ProjectSettings({ scope, source: selectedSource, onSource, onPro
     <AiProviderSettings />
     <MachineSetupCard projectId={selectedProject.id} targetType={targetType} sourceHandle={source?.handle} onSourceRequired={() => void chooseSource()} />
     <EntryPointsCard projectId={selectedProject.id} targetType={targetType} sourceHandle={source?.handle} />
-    <NarrationSettings />
+    <NarrationSettings plan={scope.plan} />
     <TestStorageSettingsCard organizationId={scope.organizationId} projectId={selectedProject.id} targetType={targetType} signedIn plan={scope.plan} canManage={canManage} settings={testStorage} />
     <TestInstructionsCard organizationId={scope.organizationId} projectId={selectedProject.id} targetType={targetType} sourceHandle={source?.handle} storage={testStorage?.mode} />
     {about}

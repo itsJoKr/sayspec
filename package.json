@@ -48,6 +48,7 @@
     "test:native:connected-beta": "node firebase/scripts/run-connected-beta.mjs",
     "test:emulator:managed-fix": "npm run build -w @sayspec/functions && node firebase/scripts/run-managed-fix-tests.mjs",
     "test:emulator:recording-share": "npm run build -w @sayspec/functions && node firebase/scripts/run-recording-share-tests.mjs",
+    "test:emulator:transcription": "npm run build -w @sayspec/functions && node firebase/scripts/run-narration-transcription-tests.mjs",
     "test:emulator:flutter-share": "npm run build -w @sayspec/functions && node firebase/scripts/run-flutter-share-tests.mjs",
     "test:native:flutter-share": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-flutter-share-native.mjs",
     "test:native:recording-share": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-recording-share-native.mjs",

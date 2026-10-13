@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   LocalRecordingReview, LocalRecordingSummary, LocalSourceSelection, ReadinessReport,
-  LocalTranscriptionSetup, RecordingControlSnapshot, RecordingEvent,
+  LocalTranscriptionSetup, PlanKind, RecordingControlSnapshot, RecordingEvent,
   RecordingSharingChoice, PlaywrightGenerationDraft,
 } from '@sayspec/contracts';
 import { Button, Field, StatusLabel } from './ui';
@@ -11,6 +11,7 @@ import { ClaudeTerminalPanel } from './claude-terminal';
 import { FlutterRecordPanel } from './flutter-record';
 import { GenerationPickers, RecordLayout, RecordingsSidebar, useCodingAgent } from './recordings-sidebar';
 import { EntryPointSelect, useProjectEntryPoints } from './entry-points';
+import { cloudTranscriptionScope, useNarrationChoice } from './narration-model-preference';
 
 type RecordProject = { id: string; name: string; targetType: 'web' | 'flutter'; baseUrl?: string };
 type CloudScope = { organizationId: string; createdByUid: string };
@@ -28,7 +29,7 @@ function audioMimeType() {
   return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((value) => MediaRecorder.isTypeSupported(value)) ?? '';
 }
 
-export function RecordPage({ project, source, visible = true, onChooseSource, cloudScope, cloudTests = Boolean(cloudScope) }: {
+export function RecordPage({ project, source, visible = true, onChooseSource, cloudScope, cloudTests = Boolean(cloudScope), cloudPlan }: {
   project?: RecordProject;
   source?: LocalSourceSelection;
   visible?: boolean;
@@ -36,6 +37,8 @@ export function RecordPage({ project, source, visible = true, onChooseSource, cl
   cloudScope?: CloudScope;
   /** Whether generated tests are recorded in Firebase; false when the project stores tests in a folder. */
   cloudTests?: boolean;
+  /** The cloud workspace's plan (null while loading); decides whether Gemini transcription is available. */
+  cloudPlan?: PlanKind | null;
 }) {
   const [readiness, setReadiness] = useState<ReadinessReport | null>(null);
   const [checking, setChecking] = useState(false);
@@ -269,7 +272,7 @@ export function RecordPage({ project, source, visible = true, onChooseSource, cl
     } catch (reason) { setError(messageOf(reason)); }
   }
 
-  if (project.targetType !== 'web') return <FlutterRecordPanel project={{ ...project, organizationId: cloudScope?.organizationId ?? 'local', createdByUid: cloudScope?.createdByUid }} source={source} visible={visible} onChooseSource={onChooseSource} />;
+  if (project.targetType !== 'web') return <FlutterRecordPanel project={{ ...project, organizationId: cloudScope?.organizationId ?? 'local', createdByUid: cloudScope?.createdByUid }} source={source} visible={visible} onChooseSource={onChooseSource} cloudPlan={cloudScope ? cloudPlan ?? null : undefined} />;
 
   const sidebar = <RecordingsSidebar
     items={recordings.map((item) => ({ id: item.id, title: item.title, meta: `${new Date(item.startedAt).toLocaleString()} · ${timeLabel(item.durationMs)}`, detail: item.status === 'interrupted' ? 'Recovered with warnings' : `${item.eventCount} actions · ${item.shareState === 'shared' ? 'Shared' : 'Local'}` }))}
@@ -281,7 +284,7 @@ export function RecordPage({ project, source, visible = true, onChooseSource, cl
   return <RecordLayout sidebar={sidebar}>
     <section className="record-console" {...(review ? { 'aria-labelledby': 'record-start-title' } : { 'aria-label': 'Record a test' })}>
       {(review || capture) && <div className="record-console__head">{review && <h2 id="record-start-title">Review recording</h2>}{capture && <StatusLabel status={capture.recording.status === 'recording' ? 'running' : 'warning'}>{capture.recording.status === 'preparing' ? 'Browser ready' : capture.recording.status}</StatusLabel>}</div>}
-      {review ? <RecordingReview review={review} cloudScope={cloudScope} cloudTests={cloudTests} onBack={() => setReview(null)} onDiscard={async () => { await window.sayspec!.cancelRecording({ recordingId: review.id }); setReview(null); await refreshRecordings(); }} /> : capture ? <div className="capture-console" data-testid="capture-console">
+      {review ? <RecordingReview review={review} cloudScope={cloudScope} cloudTests={cloudTests} cloudPlan={cloudScope ? cloudPlan ?? null : undefined} onBack={() => setReview(null)} onDiscard={async () => { await window.sayspec!.cancelRecording({ recordingId: review.id }); setReview(null); await refreshRecordings(); }} /> : capture ? <div className="capture-console" data-testid="capture-console">
         <div className="capture-clock"><span className={capture.recording.status === 'recording' ? 'capture-dot' : 'capture-dot capture-dot--paused'} aria-hidden="true" /><strong>{timeLabel(elapsedMs)}</strong><span>{capture.recording.status === 'preparing' ? 'Browser ready. Click Record in the SaySpec overlay on your webpage.' : capture.recording.status === 'paused' ? 'Capture paused' : 'Actions and narration are being saved locally.'}</span></div>
         {capture.recording.status === 'recording' && <div className="audio-level" aria-label={`Microphone level ${Math.round(level * 100)} percent`}><i style={{ width: `${Math.max(2, level * 100)}%` }} /></div>}
         {silence && <p className="capture-warning" role="status">No microphone signal detected. Check the selected input before continuing.</p>}
@@ -310,7 +313,7 @@ export function RecordPage({ project, source, visible = true, onChooseSource, cl
   </RecordLayout>;
 }
 
-function RecordingReview({ review: initialReview, cloudScope, cloudTests, onBack, onDiscard }: { review: LocalRecordingReview; cloudScope?: CloudScope; cloudTests: boolean; onBack: () => void; onDiscard: () => Promise<void> }) {
+function RecordingReview({ review: initialReview, cloudScope, cloudTests, cloudPlan, onBack, onDiscard }: { review: LocalRecordingReview; cloudScope?: CloudScope; cloudTests: boolean; cloudPlan?: PlanKind | null; onBack: () => void; onDiscard: () => Promise<void> }) {
   const cloud = useCloud();
   const [review, setReview] = useState(initialReview);
   const [selected, setSelected] = useState<RecordingEvent | null>(review.manifest.events[0] ?? null);
@@ -386,7 +389,7 @@ function RecordingReview({ review: initialReview, cloudScope, cloudTests, onBack
     {review.completenessWarnings.length > 0 && <div className="review-warnings" role="status"><strong>Review these gaps</strong>{review.completenessWarnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
     <div className="review-grid"><div className="timeline" aria-label="Captured action timeline">{review.manifest.events.length ? review.manifest.events.map((event) => { const eventSegment = review.manifest.segments.find((item) => item.id === event.segmentId); return <button key={event.id} data-selected={selected?.id === event.id} aria-pressed={selected?.id === event.id} data-audio-offset-ms={eventSegment ? Math.max(0, event.elapsedMs - eventSegment.startMs) : undefined} onClick={() => setSelected(event)}><time>{timeLabel(event.elapsedMs)}</time><span><strong>{event.action}</strong>{event.targetDescription}<small>{event.value ? `Value: ${event.value}` : event.action === 'input' ? 'Sensitive value omitted' : event.frameUrl}</small></span></button>; }) : <p>No browser actions were captured.</p>}</div><div className="evidence-viewer">{imageUrl ? <img src={imageUrl} alt={`Screenshot for ${selected?.targetDescription ?? 'selected action'}`} /> : <div className="evidence-missing">No screenshot for this action.</div>}{audioUrl ? <audio ref={audioRef} controls src={audioUrl} /> : <p>No audio is available for this segment.</p>}</div></div>
     <section className="transcription-panel" aria-label="Generate test from recording">
-      <GenerationPanel review={review} cloudScope={cloudTests ? cloudScope : undefined} onReview={setReview} onGenerationStart={() => { setClaudeMode('prepare'); setReviewTab('claude'); }} onLaunchClaude={() => setClaudeMode('generate')} onStatusChange={setGenerationStatus} transcriptionSetup={transcriptionSetup} transcriptionProgress={transcriptionProgress} />
+      <GenerationPanel review={review} cloudScope={cloudTests ? cloudScope : undefined} transcriptionOrganizationId={cloudScope?.organizationId} cloudPlan={cloudPlan} onReview={setReview} onGenerationStart={() => { setClaudeMode('prepare'); setReviewTab('claude'); }} onLaunchClaude={() => setClaudeMode('generate')} onStatusChange={setGenerationStatus} transcriptionSetup={transcriptionSetup} transcriptionProgress={transcriptionProgress} />
       {transcriptionSetup?.model.error && transcriptionSetup.model.state !== 'installed' && <p className="inline-error" role="alert">{transcriptionSetup.model.error}</p>}
       {transcriptionError && <p className="inline-error" role="alert">{transcriptionError}</p>}
     </section>
@@ -395,9 +398,12 @@ function RecordingReview({ review: initialReview, cloudScope, cloudTests, onBack
   </div>;
 }
 
-function GenerationPanel({ review, cloudScope, onReview, onGenerationStart, onLaunchClaude, onStatusChange, transcriptionSetup, transcriptionProgress }: { review: LocalRecordingReview; cloudScope?: CloudScope; onReview: (review: LocalRecordingReview) => void; onGenerationStart: () => void; onLaunchClaude: () => void; onStatusChange: (status: string) => void; transcriptionSetup: LocalTranscriptionSetup | null; transcriptionProgress: { value: number; message: string } }) {
+function GenerationPanel({ review, cloudScope, transcriptionOrganizationId, cloudPlan, onReview, onGenerationStart, onLaunchClaude, onStatusChange, transcriptionSetup, transcriptionProgress }: { review: LocalRecordingReview; cloudScope?: CloudScope; transcriptionOrganizationId?: string; cloudPlan?: PlanKind | null; onReview: (review: LocalRecordingReview) => void; onGenerationStart: () => void; onLaunchClaude: () => void; onStatusChange: (status: string) => void; transcriptionSetup: LocalTranscriptionSetup | null; transcriptionProgress: { value: number; message: string } }) {
   const cloud = useCloud();
   const agent = useCodingAgent();
+  const narration = useNarrationChoice(cloudPlan);
+  // Gemini needs the cloud workspace that owns this project; guest projects transcribe locally.
+  const geminiOrganizationId = narration.engine === 'cloud' ? transcriptionOrganizationId : undefined;
   const agentProvider = agent.provider; const agentName = agent.name;
   const [busy, setBusy] = useState(review.generationDraft?.state === 'generating');
   const [progress, setProgress] = useState(''); const [error, setError] = useState('');
@@ -429,22 +435,23 @@ function GenerationPanel({ review, cloudScope, onReview, onGenerationStart, onLa
   }, [transcriptionProgress, onStatusChange]);
   async function generate() {
     if (!agentProvider) { setError('Choose Claude Code or Codex next to Generate tests.'); return; }
-    if (!transcriptionSetup || transcriptionSetup.runtime.state !== 'ready') { setError('Local transcription is not ready. Check Narration under Settings.'); return; }
-    const selectedModelId = transcriptionSetup.model.id;
+    if (!geminiOrganizationId && (!transcriptionSetup || transcriptionSetup.runtime.state !== 'ready')) { setError('Local transcription is not ready. Check Narration under Settings.'); return; }
     onGenerationStart(); onStatusChange('Preparing recording evidence…');
     setBusy(true); setError(''); canceledRef.current = false;
     try {
-      if (transcriptionSetup.model.state !== 'installed') {
+      if (!geminiOrganizationId && transcriptionSetup!.model.state !== 'installed') {
         stageRef.current = 'model'; setProgress('Downloading the local narration model…');
         onStatusChange('Downloading local transcription model…');
-        const installed = await window.sayspec!.installLocalTranscriptionModel({ modelId: selectedModelId });
+        const installed = await window.sayspec!.installLocalTranscriptionModel({ modelId: transcriptionSetup!.model.id });
         if (installed.model.state !== 'installed' || canceledRef.current) throw new Error('Model download did not complete.');
       }
-      if (review.transcript?.status !== 'ready') {
-        stageRef.current = 'transcription'; setProgress('Transcribing the saved narration on this device…');
-        onStatusChange('Transcribing narration on this device…');
-        const transcript = await window.sayspec!.transcribeRecording({ recordingId: review.id });
-        if (transcript.status !== 'ready' || canceledRef.current) throw new Error(transcript.error ?? 'Local transcription did not complete.');
+      // Choosing Gemini replaces a Whisper transcript (for example the automatic one after stopping).
+      if (review.transcript?.status !== 'ready' || (geminiOrganizationId && review.transcript.provider.kind !== 'cloud')) {
+        stageRef.current = 'transcription';
+        setProgress(geminiOrganizationId ? 'Transcribing the saved narration with Gemini…' : 'Transcribing the saved narration on this device…');
+        onStatusChange(geminiOrganizationId ? 'Transcribing narration with Gemini in SaySpec Cloud…' : 'Transcribing narration on this device…');
+        const transcript = await window.sayspec!.transcribeRecording({ recordingId: review.id, ...(geminiOrganizationId ? { cloud: await cloudTranscriptionScope(cloud, geminiOrganizationId, review.projectId) } : {}) });
+        if (transcript.status !== 'ready' || canceledRef.current) throw new Error(transcript.error ?? 'Transcription did not complete.');
         if (!transcript.segments.length) throw new Error('No speech was detected. Narrate what the test should verify, then record again.');
       }
       onStatusChange(`Starting ${agentName}…`);
@@ -487,8 +494,8 @@ function GenerationPanel({ review, cloudScope, onReview, onGenerationStart, onLa
   }
   return <section className="generation-panel" aria-labelledby="playwright-generation-title" data-testid="playwright-generation">
     <h3 id="playwright-generation-title">Generate test</h3>
-    {transcriptionSetup && transcriptionSetup.runtime.state !== 'ready' && <p className="inline-error" role="status">{transcriptionSetup.runtime.detail}</p>}
-    <div className="transcript-actions"><GenerationPickers setup={transcriptionSetup} agent={agent} disabled={busy} /><Button variant="primary" onClick={() => void generate()} disabled={busy || transcriptionSetup?.runtime.state !== 'ready'}>{busy ? 'Preparing…' : draft?.state === 'draft' ? 'Generate again' : 'Generate tests'}</Button>{busy && <Button onClick={() => void cancel()}>Cancel</Button>}<span>{progress || (review.transcript?.status === 'running' ? transcriptionProgress.message || 'Transcribing locally…' : '')}</span></div>
+    {!geminiOrganizationId && transcriptionSetup && transcriptionSetup.runtime.state !== 'ready' && <p className="inline-error" role="status">{transcriptionSetup.runtime.detail}</p>}
+    <div className="transcript-actions"><GenerationPickers setup={transcriptionSetup} narration={narration} agent={agent} disabled={busy} /><Button variant="primary" onClick={() => void generate()} disabled={busy || (!geminiOrganizationId && transcriptionSetup?.runtime.state !== 'ready')}>{busy ? 'Preparing…' : draft?.state === 'draft' ? 'Generate again' : 'Generate tests'}</Button>{busy && <Button onClick={() => void cancel()}>Cancel</Button>}<span>{progress || (review.transcript?.status === 'running' ? transcriptionProgress.message || 'Transcribing locally…' : '')}</span></div>
     {agent.notice && <p className="control-help" role="status">{agent.notice}</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
   </section>;

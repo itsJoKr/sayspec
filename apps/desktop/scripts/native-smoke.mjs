@@ -99,7 +99,7 @@ if (process.env.SAYSPEC_PROJECT_GATE_SMOKE === '1') {
   assert.deepEqual(result.projectGateFlow, { gateVisible: true, flutterRequiresSource: true, sourceSelected: true, enteredShell: true, heading: 'Record' });
 }
 if (process.env.SAYSPEC_SETTINGS_SMOKE === '1') {
-  assert.deepEqual(result.settingsFlow, { invalidUrlVisible: true, sourceSelected: true, readinessReady: true, aiSelected: true, aiSettingsCompact: true, modelDefault: true, sharedSaved: true, createdProject: true, projectIndexed: true, heading: 'Settings' });
+  assert.deepEqual(result.settingsFlow, { invalidUrlVisible: true, sourceSelected: true, readinessReady: true, aiSelected: true, aiSettingsCompact: true, modelDefault: true, geminiGated: true, sharedSaved: true, createdProject: true, projectIndexed: true, heading: 'Settings' });
 }
 if (process.env.SAYSPEC_LIBRARY_SMOKE === '1') {
   assert.deepEqual(result.libraryFlow, { published: true, authorVisible: true, compactTable: true, recordInAppbar: true, emptyRow: true, renamed: true, deleted: true, recordNavigation: true, manualAuthoringAbsent: true, heading: 'Record' });

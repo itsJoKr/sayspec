@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   flutterSessionIdOf, type FlutterCapture, type FlutterCaptureLifecycleEvent, type FlutterCaptureSummary, type FlutterDeviceSummary,
-  type FlutterRecorderSdkCompatibility, type LocalSourceSelection, type LocalTranscriptionSetup, type PatrolAttempt, type PatrolSavedTest,
+  type FlutterRecorderSdkCompatibility, type LocalSourceSelection, type LocalTranscriptionSetup, type PatrolAttempt, type PatrolSavedTest, type PlanKind,
 } from '@sayspec/contracts';
 import { Button, Field, StatusLabel } from './ui';
 import { GenerationPickers, RecordLayout, RecordingsSidebar, useCodingAgent } from './recordings-sidebar';
@@ -11,6 +11,7 @@ import { useCloud } from './cloud/context';
 import { EntryPointSelect, useProjectEntryPoints } from './entry-points';
 import { RecorderIntegrationDialog } from './flutter-integration';
 import { DeviceSelect } from './device-select';
+import { cloudTranscriptionScope, useNarrationChoice } from './narration-model-preference';
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message.replace(/^Error:\s*/, '') : String(error));
 
@@ -70,12 +71,17 @@ function groupSessions(captures: readonly FlutterCaptureSummary[]): FlutterSessi
  * The Record view keeps project setup compact and focuses on device selection
  * and capture. Full machine readiness and integration setup live in Settings.
  */
-export function FlutterRecordPanel({ project, source, visible = true, onChooseSource }: {
+export function FlutterRecordPanel({ project, source, visible = true, onChooseSource, cloudPlan }: {
   project: { id: string; name: string; baseUrl?: string; organizationId: string; createdByUid?: string };
   source?: LocalSourceSelection;
   visible?: boolean;
   onChooseSource: (source: LocalSourceSelection) => void;
+  /** The cloud workspace's plan (null while loading); undefined for a guest project. */
+  cloudPlan?: PlanKind | null;
 }) {
+  const cloud = useCloud();
+  const narration = useNarrationChoice(cloudPlan);
+  const gemini = narration.engine === 'cloud' && project.organizationId !== 'local';
   const [devices, setDevices] = useState<FlutterDeviceSummary[]>([]);
   const [checkingDevices, setCheckingDevices] = useState(true);
   const [deviceId, setDeviceId] = useState('');
@@ -327,10 +333,10 @@ export function FlutterRecordPanel({ project, source, visible = true, onChooseSo
     if (!selectedSession || !source) return;
     if (!agent.provider) { setError('Choose Claude Code or Codex next to Generate tests.'); return; }
     const setup = transcriptionSetup ?? await window.sayspec!.getLocalTranscriptionSetup();
-    if (setup.runtime.state !== 'ready') { setError(setup.runtime.detail); return; }
+    if (!gemini && setup.runtime.state !== 'ready') { setError(setup.runtime.detail); return; }
     setPreparing(true); setError(''); setGeneration(null);
     try {
-      if (setup.model.state !== 'installed') {
+      if (!gemini && setup.model.state !== 'installed') {
         setStatus('Downloading the local narration model…');
         const installed = await window.sayspec!.installLocalTranscriptionModel({ modelId: setup.model.id });
         setTranscriptionSetup(installed);
@@ -340,12 +346,13 @@ export function FlutterRecordPanel({ project, source, visible = true, onChooseSo
       const tested = testedCaptureIds(current.tests);
       const candidates = current.captures.filter((item) => item.summary.status === 'ready' && item.narration?.sha256 && !tested.has(item.summary.id));
       if (!candidates.length) throw new Error(current.captures.some((item) => tested.has(item.summary.id)) ? 'Every narrated recording in this session already has a test.' : 'No finished recording in this session has narration. Narrate what each test should verify while recording.');
-      const untranscribed = candidates.filter((item) => item.transcript?.status !== 'ready');
+      // Choosing Gemini replaces Whisper transcripts of recordings that do not have a test yet.
+      const untranscribed = candidates.filter((item) => item.transcript?.status !== 'ready' || (gemini && item.transcript.provider.kind !== 'cloud'));
       for (const [index, item] of untranscribed.entries()) {
-        transcribingRef.current = `Transcribing ${item.summary.title} (${index + 1} of ${untranscribed.length})…`;
+        transcribingRef.current = `Transcribing ${item.summary.title}${gemini ? ' with Gemini' : ''} (${index + 1} of ${untranscribed.length})…`;
         setStatus(transcribingRef.current);
-        const transcript = await window.sayspec!.transcribeFlutterCapture({ projectId: project.id, captureId: item.summary.id });
-        if (transcript.status !== 'ready') throw new Error(`${item.summary.title}: ${transcript.error ?? 'Local transcription did not complete.'}`);
+        const transcript = await window.sayspec!.transcribeFlutterCapture({ projectId: project.id, captureId: item.summary.id, ...(gemini ? { cloud: await cloudTranscriptionScope(cloud, project.organizationId, project.id) } : {}) });
+        if (transcript.status !== 'ready') throw new Error(`${item.summary.title}: ${transcript.error ?? 'Transcription did not complete.'}`);
       }
       transcribingRef.current = '';
       const transcribed = (await loadSession(selectedSession.id)).captures.filter((item) => candidates.some((candidate) => candidate.summary.id === item.summary.id) && item.transcript?.status === 'ready' && item.transcript.segments.length > 0);
@@ -406,7 +413,7 @@ export function FlutterRecordPanel({ project, source, visible = true, onChooseSo
         <div className="flutter-capture-review__head">
           <div><h2>{selectedSession.title}</h2><p>Recording session · {selectedSession.deviceName} · {new Date(selectedSession.recordings[0]!.startedAt).toLocaleString()} · {plural(selectedSession.recordings.length, 'recording')}</p></div>
           <div className="generate-actions">
-            <GenerationPickers setup={transcriptionSetup} agent={agent} disabled={preparing} />
+            <GenerationPickers setup={transcriptionSetup} narration={narration} agent={agent} disabled={preparing} />
             <Button variant="primary" disabled={preparing || !source || !pending.length} title={!pending.length && narrated.length ? 'Every recording with narrated speech already has a test.' : undefined} onClick={() => void generate()}>{preparing ? 'Preparing…' : pending.length > 1 ? `Generate ${pending.length} tests` : 'Generate tests'}</Button>
           </div>
         </div>

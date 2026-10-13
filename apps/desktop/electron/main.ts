@@ -14,7 +14,7 @@ import { LocalWorkspaceStore } from './local-workspace';
 import { RecordingStore } from './recording-store';
 import { RecordingManager } from './recording-manager';
 import { LocalModelManager } from './transcription/model-manager';
-import { createTranscriptionProvider, DEFAULT_TRANSCRIPTION_PROVIDER, type TranscriptionProvider } from './transcription/provider';
+import { CLOUD_TRANSCRIPTION_PROVIDER, createTranscriptionProvider, DEFAULT_TRANSCRIPTION_PROVIDER, type TranscriptionProvider, type TranscriptionStartOptions } from './transcription/provider';
 import { PlaywrightGenerationManager } from './generation/playwright-generation';
 import { SavedWebTestStore } from './execution/saved-web-tests';
 import { FailureAnalysisManager } from './execution/failure-analysis';
@@ -68,6 +68,8 @@ let recordingStore: RecordingStore | undefined;
 let recordingManager: RecordingManager | undefined;
 let localModels: LocalModelManager | undefined;
 let localTranscription: TranscriptionProvider | undefined;
+// Gemini through the cloud backend; only in builds that have one.
+let cloudTranscription: TranscriptionProvider | undefined;
 let playwrightGeneration: PlaywrightGenerationManager | undefined;
 let savedWebTests: SavedWebTestStore | undefined;
 let failureAnalysis: FailureAnalysisManager | undefined;
@@ -94,6 +96,15 @@ let entryPoints: ProjectEntryPointStore | undefined;
 // Fixed at build time from the build environment (scripts/build-electron.mjs); empty in local-only builds.
 declare const __SAYSPEC_CLOUD_FUNCTIONS_URL__: string;
 declare const __SAYSPEC_ACCOUNT_PORTAL_ORIGIN__: string;
+
+/** Gemini when the renderer passes a cloud scope, otherwise local Whisper. */
+async function transcriptionFor(id: string, cloud: unknown): Promise<{ provider: TranscriptionProvider; options?: TranscriptionStartOptions }> {
+  if (cloud === undefined) return { provider: localTranscription! };
+  if (!cloudTranscription) throw new Error('This build has no cloud backend for Gemini transcription.');
+  // Replaces the automatic local transcription that may still run after a recording stops.
+  if (localTranscription!.running(id)) await localTranscription!.cancel(id);
+  return { provider: cloudTranscription, options: { cloud: cloud as TranscriptionStartOptions['cloud'] } };
+}
 
 async function callManagedFixBackend(name: FixDecision, idToken: unknown, data: unknown) {
   if (typeof idToken !== 'string' || !idToken || idToken.length > 16_384) throw new Error('Sign in again before deciding on a Pro fix.');
@@ -276,6 +287,8 @@ async function runNativeSmoke(window: BrowserWindow) {
         [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === 'Check this machine')?.click();
         const readinessReady = Boolean(await waitFor(() => document.querySelector('.settings-status')?.textContent.includes('machine is ready')));
         const modelDefault = Boolean(await waitFor(() => document.querySelector('select[aria-label="Default transcription model"]')?.value.includes('whisper-small')));
+        // The seeded workspace is on Free: Gemini is listed for the signed-in workspace but cannot be chosen.
+        const geminiGated = Boolean(await waitFor(() => document.querySelector('select[aria-label="Default transcription model"] option[value="gemini-cloud"]')?.disabled));
         const aiChoice = await waitFor(() => document.querySelector('[data-testid="default-ai-select"]')); aiChoice.value = 'codex'; aiChoice.dispatchEvent(new Event('change', { bubbles: true }));
         const aiSelected = Boolean(await waitFor(() => document.querySelector('[data-testid="default-ai-select"]')?.value === 'codex' && document.querySelector('.ai-provider-settings .ai-provider-logo')?.getAttribute('data-provider') === 'codex'));
         const aiSettingsCompact = Boolean(document.querySelector('[data-testid="default-ai-select"]')) && !document.querySelector('[data-testid="ai-provider-settings"] .eyebrow, [data-testid="ai-provider-settings"] .ai-privacy, [data-testid="ai-provider-settings"] .control-help');
@@ -285,7 +298,7 @@ async function runNativeSmoke(window: BrowserWindow) {
         const projectName = await waitFor(() => document.querySelector('[role="dialog"] #field-project-name')); setInput(projectName, 'Native acceptance project'); setInput(document.querySelector('[role="dialog"] #field-base-url'), 'http://127.0.0.1:3001'); document.querySelector('[role="dialog"] [data-testid="project-create"]')?.click();
         const projectIndexed = Boolean(await waitFor(() => document.querySelector('select[aria-label="Project"]')?.options.length === 3));
         const createdProject = Boolean(document.querySelector('select[aria-label="Project"]')?.value.includes('native_acceptance_project'));
-        return { invalidUrlVisible, sourceSelected, readinessReady, aiSelected, aiSettingsCompact, modelDefault, sharedSaved, createdProject, projectIndexed, heading: document.querySelector('h1')?.textContent };
+        return { invalidUrlVisible, sourceSelected, readinessReady, aiSelected, aiSettingsCompact, modelDefault, geminiGated, sharedSaved, createdProject, projectIndexed, heading: document.querySelector('h1')?.textContent };
       })()`);
     }
 
@@ -587,6 +600,10 @@ app.whenReady().then(async () => {
   await localModels.initialize();
   localTranscription = createTranscriptionProvider(DEFAULT_TRANSCRIPTION_PROVIDER, { rootDirectory: path.join(app.getPath('userData'), 'transcription-work'), store: recordingStore, models: localModels, onLifecycle: sendTranscriptionLifecycle });
   await localTranscription.initialize();
+  if (__SAYSPEC_CLOUD_FUNCTIONS_URL__) {
+    cloudTranscription = createTranscriptionProvider(CLOUD_TRANSCRIPTION_PROVIDER, { rootDirectory: path.join(app.getPath('userData'), 'transcription-work'), store: recordingStore, models: localModels, cloudFunctionsUrl: __SAYSPEC_CLOUD_FUNCTIONS_URL__, onLifecycle: sendTranscriptionLifecycle });
+    await cloudTranscription.initialize();
+  }
   const codingAgents = new CodingAgentAdapters();
   const agentWorkspaces = new ProjectAgentWorkspaceManager(path.join(app.getPath('userData'), 'agent-project-workspaces'), savedWebTests!, patrolRuns, (scope) => testInstructions!.read(scope));
   failureAnalysis = new FailureAnalysisManager(savedWebTests!, codingAgents, patrolRuns);
@@ -1067,14 +1084,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('flutter:transcribe', async (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !flutterCaptures || !localTranscription || typeof input !== 'object' || input === null) throw new Error('Flutter transcription request is invalid.');
-    const value = input as { projectId?: unknown; captureId?: unknown };
+    const value = input as { projectId?: unknown; captureId?: unknown; cloud?: unknown };
     if (typeof value.projectId !== 'string' || typeof value.captureId !== 'string') throw new Error('Flutter transcription request is invalid.');
     const captureId = value.captureId;
     const capture = await flutterCaptures.get(value.projectId, captureId);
     const { path: audioPath, narration } = await flutterCaptures.narrationPath(value.projectId, captureId);
     const events = capture.events.map((item) => ({ id: item.id, elapsedMs: Math.max(0, Math.round(item.hostAlignedMs - narration.startedAtHostMonotonicMs)) }))
       .filter((item) => item.elapsedMs <= narration.durationMs + capture.clock.uncertaintyMs);
-    return localTranscription.startFlutter({ captureId, audioPath, durationMs: narration.durationMs, timingUncertaintyMs: capture.clock.uncertaintyMs, events, persist: (transcript) => flutterCaptures!.writeTranscript(captureId, transcript) });
+    const { provider, options } = await transcriptionFor(captureId, value.cloud);
+    return provider.startFlutter({ captureId, audioPath, durationMs: narration.durationMs, timingUncertaintyMs: capture.clock.uncertaintyMs, events, persist: (transcript) => flutterCaptures!.writeTranscript(captureId, transcript) }, options);
   });
   ipcMain.handle('patrol:list-tests', async (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !patrolRuns || typeof input !== 'object' || input === null) throw new Error('Patrol test query is invalid.');
@@ -1282,13 +1300,17 @@ app.whenReady().then(async () => {
     if (!isTrustedMainFrame(event, rendererUrl) || !localModels || typeof input !== 'object' || input === null) throw new Error('Model removal request is invalid.');
     return localModels.remove(String((input as { modelId?: unknown }).modelId ?? ''));
   });
-  ipcMain.handle('transcription:start', (event, input: unknown) => {
+  ipcMain.handle('transcription:start', async (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !localTranscription || typeof input !== 'object' || input === null) throw new Error('Transcription request is invalid.');
-    return localTranscription.start(String((input as { recordingId?: unknown }).recordingId ?? ''));
+    const value = input as { recordingId?: unknown; cloud?: unknown };
+    const recordingId = String(value.recordingId ?? '');
+    const { provider, options } = await transcriptionFor(recordingId, value.cloud);
+    return provider.start(recordingId, options);
   });
   ipcMain.handle('transcription:cancel', (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !localTranscription || typeof input !== 'object' || input === null) throw new Error('Transcription cancellation request is invalid.');
-    return localTranscription.cancel(String((input as { recordingId?: unknown }).recordingId ?? ''));
+    const recordingId = String((input as { recordingId?: unknown }).recordingId ?? '');
+    return (cloudTranscription?.running(recordingId) ? cloudTranscription : localTranscription).cancel(recordingId);
   });
   ipcMain.handle('transcription:save-edits', (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !recordingStore || typeof input !== 'object' || input === null) throw new Error('Transcript edit request is invalid.');
@@ -1637,7 +1659,7 @@ app.on('before-quit', (event) => {
   selectedDirectories.clear();
   if ((localJobs || recordingManager || localTranscription || playwrightGeneration || claudeTerminal || savedWebTests || failureAnalysis || managedFixSessions || machineSetup || machineSetupAgent || flutterSessions || patrolRunner || patrolRunAnalysis || patrolGeneration) && !shutdownComplete) {
     event.preventDefault();
-    void Promise.all([localJobs?.shutdown(), recordingManager?.shutdown(), localTranscription?.shutdown(), playwrightGeneration?.shutdown(), claudeTerminal?.shutdown(), failureAnalysis?.shutdown(), managedFixSessions?.shutdown(), applicationFixSessions?.shutdown(), savedWebTests?.shutdown(), machineSetup?.shutdown(), machineSetupAgent?.shutdown(), flutterSessions?.shutdown(), patrolGeneration?.shutdown(), patrolRunner?.shutdown(), patrolRunAnalysis?.shutdown()]).finally(() => {
+    void Promise.all([localJobs?.shutdown(), recordingManager?.shutdown(), localTranscription?.shutdown(), cloudTranscription?.shutdown(), playwrightGeneration?.shutdown(), claudeTerminal?.shutdown(), failureAnalysis?.shutdown(), managedFixSessions?.shutdown(), applicationFixSessions?.shutdown(), savedWebTests?.shutdown(), machineSetup?.shutdown(), machineSetupAgent?.shutdown(), flutterSessions?.shutdown(), patrolGeneration?.shutdown(), patrolRunner?.shutdown(), patrolRunAnalysis?.shutdown()]).finally(() => {
       shutdownComplete = true;
       app.quit();
     });
