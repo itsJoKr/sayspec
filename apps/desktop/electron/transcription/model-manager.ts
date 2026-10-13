@@ -200,6 +200,21 @@ export class LocalModelManager {
     }
   }
 
+  /** FFmpeg alone, for cloud transcription, which needs no Whisper runtime or model. */
+  async requireConverter() {
+    const converterPath = (await this.snapshot()).runtime.converterPath ?? await this.#detectConverter();
+    if (!converterPath) throw new Error('FFmpeg is required to prepare recorded audio for cloud transcription. Install it with `brew install ffmpeg`.');
+    return converterPath;
+  }
+
+  async #detectConverter() {
+    for (const candidate of this.#converterCandidates) {
+      const output = await spawnVersion(candidate, ['-version']);
+      if (output?.includes('ffmpeg version')) return candidate;
+    }
+    return undefined;
+  }
+
   async #detectRuntime(): Promise<LocalWhisperRuntime> {
     if (!['darwin', 'linux', 'win32'].includes(this.#platform) || !['arm64', 'x64'].includes(this.#architecture)) return {
       state: 'unsupported', name: 'whisper.cpp', requiredVersion: WHISPER_RUNTIME.version,
@@ -211,11 +226,7 @@ export class LocalModelManager {
       const match = output?.match(/whisper\.cpp version:\s*([\w.-]+)/i);
       if (match) { runtimePath = candidate; detectedVersion = match[1]; break; }
     }
-    let converterPath: string | undefined;
-    for (const candidate of this.#converterCandidates) {
-      const output = await spawnVersion(candidate, ['-version']);
-      if (output?.includes('ffmpeg version')) { converterPath = candidate; break; }
-    }
+    const converterPath = await this.#detectConverter();
     if (!runtimePath || !converterPath) return {
       state: 'missing', name: 'whisper.cpp', requiredVersion: WHISPER_RUNTIME.version,
       ...(detectedVersion ? { detectedVersion } : {}),

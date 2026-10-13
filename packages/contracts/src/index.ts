@@ -296,7 +296,14 @@ export interface LocalWhisperModel {
   error?: string;
 }
 export interface LocalTranscriptionSetup { runtime: LocalWhisperRuntime; model: LocalWhisperModel; }
-export interface TranscriptRevision { id: string; text: string; editedAt: string; source: 'whisper' | 'user'; }
+/**
+ * Sends narration to the workspace's cloud backend for Gemini transcription
+ * (Beta and Pro plans). The backend rechecks membership, plan and allowance.
+ */
+export interface CloudTranscriptionScope { idToken: string; organizationId: string; projectId: string; }
+/** Longest narration (one recording segment, or one Flutter capture) cloud transcription accepts. */
+export const CLOUD_TRANSCRIPTION_MAX_MS = 25 * 60_000;
+export interface TranscriptRevision { id: string; text: string; editedAt: string; source: 'whisper' | 'gemini' | 'user'; }
 export interface LocalTranscriptSegment {
   id: string;
   recordingSegmentId: string;
@@ -313,7 +320,10 @@ export interface LocalTranscript {
   recordingId: string;
   status: 'running' | 'ready' | 'failed' | 'canceled';
   language?: string;
-  provider: { kind: 'local'; runtime: 'whisper.cpp'; runtimeVersion: string; modelId: string; modelSha256: string; translated: false };
+  provider:
+    | { kind: 'local'; runtime: 'whisper.cpp'; runtimeVersion: string; modelId: string; modelSha256: string; translated: false }
+    /** Pro: narration uploaded to the workspace's SaySpec Cloud and transcribed by Gemini there. */
+    | { kind: 'cloud'; service: 'gemini'; model: string; translated: false };
   segments: readonly LocalTranscriptSegment[];
   startedAt: string;
   finishedAt?: string;
@@ -863,7 +873,8 @@ export interface DesktopBridge {
   installLocalTranscriptionModel(input: { modelId: string }): Promise<LocalTranscriptionSetup>;
   cancelLocalTranscriptionModelInstall(): Promise<LocalTranscriptionSetup>;
   removeLocalTranscriptionModel(input: { modelId: string }): Promise<LocalTranscriptionSetup>;
-  transcribeRecording(input: { recordingId: string }): Promise<LocalTranscript>;
+  /** Transcribes on this device, or with Gemini in the workspace's cloud when `cloud` is given. */
+  transcribeRecording(input: { recordingId: string; cloud?: CloudTranscriptionScope }): Promise<LocalTranscript>;
   cancelRecordingTranscription(input: { recordingId: string }): Promise<LocalTranscript>;
   saveTranscriptEdits(input: { recordingId: string; edits: readonly { segmentId: string; text: string }[] }): Promise<LocalRecordingReview>;
   saveRecordingIntent(input: { recordingId: string; intent: Omit<RecordingIntentReview, 'schemaVersion' | 'recordingId' | 'updatedAt'> }): Promise<LocalRecordingReview>;
@@ -936,7 +947,7 @@ export interface DesktopBridge {
   beginFlutterNarration(input: { captureId: string; mimeType: string }): Promise<{ startedAtHostMonotonicMs: number }>;
   appendFlutterNarration(input: { captureId: string; mimeType: string; bytes: Uint8Array }): Promise<void>;
   finishFlutterNarration(input: { captureId: string }): Promise<FlutterCapture['narration']>;
-  transcribeFlutterCapture(input: { projectId: string; captureId: string }): Promise<LocalTranscript>;
+  transcribeFlutterCapture(input: { projectId: string; captureId: string; cloud?: CloudTranscriptionScope }): Promise<LocalTranscript>;
   readFlutterCaptureNarration(input: { captureId: string }): Promise<RecordingAsset>;
   setFlutterCaptureShareState(input: { captureId: string; state: NonNullable<FlutterCaptureSummary['shareState']> }): Promise<FlutterCaptureSummary>;
   listFlutterCaptures(input: { projectId: string }): Promise<FlutterCaptureSummary[]>;

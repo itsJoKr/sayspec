@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { LocalTranscriptionSetup } from '@sayspec/contracts';
+import type { LocalTranscriptionSetup, PlanKind } from '@sayspec/contracts';
 import { Button } from './ui';
-import { readDefaultNarrationModel, saveDefaultNarrationModel } from './narration-model-preference';
+import { CLOUD_NARRATION, cloudNarrationLabel, useNarrationChoice } from './narration-model-preference';
 
-export function NarrationSettings() {
-  const [defaultModelId, setDefaultModelId] = useState(readDefaultNarrationModel);
+/** `plan` is the signed-in workspace's plan; without one (guest), only local Whisper is offered. */
+export function NarrationSettings({ plan }: { plan?: PlanKind | null }) {
+  const narration = useNarrationChoice(plan);
   const [setup, setSetup] = useState<LocalTranscriptionSetup | null>(null);
   const [error, setError] = useState('');
   const [removing, setRemoving] = useState(false);
@@ -17,17 +18,14 @@ export function NarrationSettings() {
     return () => { active = false; unsubscribe(); };
   }, []);
 
+  // A stored local model ID that no longer exists becomes the current model; a Gemini default is kept.
   useEffect(() => {
-    if (setup?.model.id && defaultModelId !== setup.model.id) {
-      setDefaultModelId(setup.model.id);
-      saveDefaultNarrationModel(setup.model.id);
-    }
-  }, [setup?.model.id, defaultModelId]);
+    if (setup?.model.id && narration.preference !== CLOUD_NARRATION && narration.preference !== setup.model.id) narration.select(setup.model.id);
+  }, [setup?.model.id, narration.preference, narration.select]);
 
   function changeModel(value: string) {
-    if (value !== setup?.model.id) return;
-    setDefaultModelId(value);
-    saveDefaultNarrationModel(value);
+    if (value !== setup?.model.id && value !== CLOUD_NARRATION) return;
+    narration.select(value);
   }
 
   async function removeModel() {
@@ -39,11 +37,13 @@ export function NarrationSettings() {
   }
 
   return <section className="settings-card narration-settings" aria-labelledby="narration-settings-heading">
-    
+
     <h2 id="narration-settings-heading">Narration</h2>
-    <label className="select-field">Default transcription model<select aria-label="Default transcription model" value={setup?.model.id === defaultModelId ? defaultModelId : setup?.model.id ?? ''} onChange={(event) => changeModel(event.target.value)}>
+    <label className="select-field">Default transcription model<select aria-label="Default transcription model" value={narration.engine === 'cloud' ? CLOUD_NARRATION : setup?.model.id ?? ''} onChange={(event) => changeModel(event.target.value)}>
       {setup ? <option value={setup.model.id}>{setup.model.displayName}</option> : <option value="">Checking local model…</option>}
+      {narration.offered && <option value={CLOUD_NARRATION} disabled={!narration.available}>{cloudNarrationLabel(narration.available)}</option>}
     </select></label>
+    {narration.engine === 'cloud' && <p className="settings-help">Narration audio is sent to SaySpec Cloud and transcribed by Google Gemini; it is not kept there. Up to 25 minutes at a time, counted against the workspace&apos;s monthly allowance. Local Whisper keeps audio on this Mac.</p>}
     <div className="narration-model">
       <div><strong>{setup?.model.state === 'installed' ? 'Ready on this device' : 'Downloaded when you generate a test'}</strong><span>{setup ? `${(setup.model.byteLength / 1024 / 1024).toFixed(1)} MiB · ${setup.model.quantization} · local` : 'Checking local model status…'}</span></div>
       {setup?.model.state === 'installed' ? <Button variant="quiet" onClick={() => void removeModel()} disabled={removing}>{removing ? 'Removing…' : 'Remove model'}</Button> : <span className="settings-help">{setup?.model.state === 'downloading' ? 'Download in progress.' : ''}</span>}

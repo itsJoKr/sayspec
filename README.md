@@ -53,7 +53,9 @@ The emulator configuration in `apps/desktop/.env.emulator` runs the Firebase bac
 
 ## Transcription
 
-Narration is transcribed by a `TranscriptionProvider` ([`apps/desktop/electron/transcription/provider.ts`](apps/desktop/electron/transcription/provider.ts)). The built-in `whisper-local` provider runs whisper.cpp on your Mac, so audio never leaves it. Other engines implement the same interface and register in `TRANSCRIPTION_PROVIDERS`.
+Narration is transcribed by a `TranscriptionProvider` ([`apps/desktop/electron/transcription/provider.ts`](apps/desktop/electron/transcription/provider.ts)). The built-in `whisper-local` provider runs whisper.cpp on your Mac, so audio never leaves it. It is the default, and the only provider in a local-only build.
+
+With a cloud backend, Beta and Pro workspaces can also choose `gemini-cloud` under **Narration**. It uploads each narration to the backend's `narrationTranscribe` Function, which checks the workspace's plan and monthly allowance and transcribes the audio with Gemini on Vertex AI. See [`firebase/README.md`](firebase/README.md#gemini-transcription). Other engines implement the same interface and register in `TRANSCRIPTION_PROVIDERS`.
 
 ## Tests
 

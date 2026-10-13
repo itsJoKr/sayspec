@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { CodingAgentProviderId, LocalTranscriptionSetup } from '@sayspec/contracts';
 import { AiProviderLogo } from './ai-provider-logo';
-import { saveDefaultNarrationModel } from './narration-model-preference';
+import { CLOUD_NARRATION, cloudNarrationLabel, type NarrationChoice } from './narration-model-preference';
 
 export type RecordingsSidebarItem = { id: string; title: string; meta: string; detail?: string; status?: ReactNode };
 
@@ -73,15 +73,17 @@ export function useCodingAgent() {
 }
 
 /** Compact narration-model and AI pickers that sit next to Generate tests. */
-export function GenerationPickers({ setup, agent, disabled }: {
+export function GenerationPickers({ setup, narration, agent, disabled }: {
   setup: LocalTranscriptionSetup | null;
+  narration: NarrationChoice;
   agent: ReturnType<typeof useCodingAgent>;
   disabled?: boolean;
 }) {
   return <div className="generation-pickers">
     <label className="compact-select"><span>Narration</span>
-      <select aria-label="Transcription model" value={setup?.model.id ?? ''} disabled={disabled} onChange={(event) => saveDefaultNarrationModel(event.target.value)}>
+      <select aria-label="Transcription model" value={narration.engine === 'cloud' ? CLOUD_NARRATION : setup?.model.id ?? ''} disabled={disabled} onChange={(event) => narration.select(event.target.value)}>
         {setup ? <option value={setup.model.id}>{setup.model.displayName}</option> : <option value="">Checking…</option>}
+        {narration.offered && <option value={CLOUD_NARRATION} disabled={!narration.available}>{cloudNarrationLabel(narration.available)}</option>}
       </select>
     </label>
     <label className="compact-select"><span>AI</span>

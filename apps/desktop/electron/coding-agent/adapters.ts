@@ -138,7 +138,7 @@ export class CodingAgentAdapters {
     const providers = await Promise.all((['claude-code', 'codex'] as const).map((provider) => this.#check(provider)));
     return {
       checkedAt: new Date().toISOString(), providers,
-      disclosure: 'Local Whisper keeps transcription on this machine. Generating with a customer coding CLI sends narration text, recorded actions, and selected screenshots to that CLI and may send them to its configured provider.',
+      disclosure: 'Local Whisper keeps transcription on this machine; Gemini transcription sends narration audio to SaySpec Cloud. Generating with a customer coding CLI sends narration text, recorded actions, and selected screenshots to that CLI and may send them to its configured provider.',
     };
   }
 

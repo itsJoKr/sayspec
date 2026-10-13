@@ -116,7 +116,7 @@
       {
         "provider": "github",
         "owner": "itsJoKr",
-        "repo": "sayspec-releases",
+        "repo": "sayspec",
         "releaseType": "draft"
       }
     ],
