@@ -97,7 +97,8 @@ try {
   assert.deepEqual(setPlan('--owner', owner.email, 'beta', '--apply'), { organizationId: orgId, from: 'free', to: 'beta', applied: true });
   await owner.call('projectSetTestStorage', { organizationId: orgId, projectId: 'project_open', testStorage: 'cloud' });
   assert.equal((await getDoc(doc(tester1.firestore, `userScopes/${tester1.uid}/organizations/${orgId}/projects/project_open`))).data().testStorage, 'cloud');
-  await rejectsWith(owner.call('projectCreate', { organizationId: orgId, projectId: 'project_cloud_flutter', name: 'Mobile app', targetType: 'flutter', access: 'restricted', testStorage: 'cloud' }), 'failed-precondition', /Web projects/);
+  await owner.call('projectCreate', { organizationId: orgId, projectId: 'project_cloud_flutter', name: 'Mobile app', targetType: 'flutter', access: 'restricted' });
+  assert.equal((await db.doc(`organizations/${orgId}/projects/project_cloud_flutter`).get()).data().testStorage, 'cloud', 'Beta workspaces default Flutter projects to SaySpec Cloud');
   await owner.call('projectCreate', { organizationId: orgId, projectId: 'project_cloud_default', name: 'Default app', targetType: 'web', baseUrl: 'https://default.example.test/', access: 'restricted' });
   assert.equal((await db.doc(`organizations/${orgId}/projects/project_cloud_default`).get()).data().testStorage, 'cloud', 'Beta workspaces default Web projects to SaySpec Cloud');
   // Pro (paid, not offered yet) is operator-set and has the same Pro features as Beta.
@@ -105,7 +106,7 @@ try {
   await owner.call('projectCreate', { organizationId: orgId, projectId: 'project_cloud_pro', name: 'Pro app', targetType: 'web', baseUrl: 'https://pro.example.test/', access: 'restricted' });
   assert.equal((await db.doc(`organizations/${orgId}/projects/project_cloud_pro`).get()).data().testStorage, 'cloud', 'Pro workspaces default Web projects to SaySpec Cloud');
   assert.deepEqual(setPlan('--owner', owner.email, 'beta', '--apply'), { organizationId: orgId, from: 'pro', to: 'beta', applied: true });
-  results.testStorage = 'Free: Local default, Cloud rejected; Beta and Pro: Cloud allowed for Web; manager-only switch reaches member scopes';
+  results.testStorage = 'Free: Local default, Cloud rejected; Beta and Pro: Cloud allowed and default for Web and Flutter; manager-only switch reaches member scopes';
 
   // 4. Seats: fill four, reject a fifth, idempotent retry at capacity keeps privileges.
   const tester2 = await person('tester2'); const tester3 = await person('tester3');

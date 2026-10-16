@@ -1,5 +1,6 @@
 import type { PortableLibrary, PortableLibraryTest, PortableWebSource, SavedWebTestVersion, TestLibraryScope, TestStorageCopyResult, TestStorageMode } from '@sayspec/contracts';
 import type { CloudBackend } from './cloud/backend';
+import { cloudPatrolVersion, sha256, syncCloudPatrolTests } from './cloud-patrol-tests';
 import { announceTestStorageChange } from './test-repository';
 
 const JUST_RECORDED = 'Just Recorded';
@@ -8,12 +9,34 @@ function requireCloud(cloud: CloudBackend | null) { if (!cloud) throw new Error(
 function messageOf(reason: unknown, fallback: string) { return reason instanceof Error ? reason.message.replace(/^(Firebase)?Error:\s*/, '') : fallback; }
 const webSource = (value: PortableWebSource & Partial<Pick<SavedWebTestVersion, 'recordingId'>>): PortableWebSource => ({ title: value.title, steps: value.steps, files: value.files, runtime: value.runtime, provenance: value.provenance, ...(value.recordingId ? { recordingId: value.recordingId } : {}) });
 
+/** Reads a Flutter project's SaySpec Cloud tests for copying, after pulling their current versions to this Mac. */
+async function exportCloudPatrolLibrary(cloud: CloudBackend, scope: TestLibraryScope): Promise<PortableLibrary> {
+  const [{ tests }, suites] = await Promise.all([syncCloudPatrolTests(cloud, scope), cloud.tests.listSuites(scope)]);
+  const local = new Map((await window.sayspec!.listPatrolTests(scope)).map((test) => [test.id, test]));
+  const suiteList = suites.filter((suite) => suite.name);
+  return {
+    suites: suiteList.map((suite) => suite.name),
+    tests: tests.map((test): PortableLibraryTest => {
+      const version = local.get(test.id);
+      return {
+        id: test.id, title: test.title || 'Untitled test', suite: suiteList.find((suite) => suite.testIds.includes(test.id))?.name ?? null,
+        ...(test.authorLabel ? { authorLabel: test.authorLabel } : {}),
+        ...(test.createdAt ? { createdAt: test.createdAt } : {}),
+        ...(test.recordingId ? { recordingId: test.recordingId } : {}),
+        // Only the version SaySpec Cloud holds is copied; a test that could not be pulled reports its source as missing.
+        ...(version && version.contentHash === test.currentVersionHash ? { patrol: { title: version.title, relativePath: version.relativePath, source: version.source, ...(version.recordingCaptureId ? { recordingCaptureId: version.recordingCaptureId } : {}), ...(version.dependencies ? { dependencies: version.dependencies } : {}), ...(version.provider ? { provider: version.provider } : {}), ...(version.appVersion ? { appVersion: version.appVersion } : {}) } } : {}),
+      };
+    }),
+  };
+}
+
 /**
- * Reads a project's SaySpec Cloud tests for copying. A test's source is this
- * Mac's latest saved version when there is one, otherwise the generated draft
- * stored in the cloud.
+ * Reads a project's SaySpec Cloud tests for copying. A Web test's source is
+ * this Mac's latest saved version when there is one, otherwise the generated
+ * draft stored in the cloud.
  */
-export async function exportCloudLibrary(cloud: CloudBackend, scope: TestLibraryScope): Promise<PortableLibrary> {
+export async function exportCloudLibrary(cloud: CloudBackend, scope: TestLibraryScope, targetType: 'web' | 'flutter' = 'web'): Promise<PortableLibrary> {
+  if (targetType === 'flutter') return exportCloudPatrolLibrary(cloud, scope);
   const [tests, suites, versions] = await Promise.all([cloud.tests.list(scope), cloud.tests.listSuites(scope), window.sayspec!.listProjectWebTestVersions(scope)]);
   const latest = new Map<string, SavedWebTestVersion>();
   for (const version of [...versions].sort((left, right) => right.version - left.version)) if (!latest.has(version.testId)) latest.set(version.testId, version);
@@ -39,7 +62,12 @@ export async function importCloudLibrary(cloud: CloudBackend, scope: TestLibrary
   const copied: PortableLibraryTest[] = [];
   for (const test of library.tests) {
     try {
-      if (!test.web) throw new Error(test.patrol ? 'Flutter tests are not stored in SaySpec Cloud.' : 'Its source is not on this Mac.');
+      if (test.patrol) {
+        await cloud.tests.savePatrolVersion({ ...scope, ...cloudPatrolVersion({ ...test.patrol, id: test.id, title: test.title, contentHash: await sha256(test.patrol.source), recordingCaptureId: test.patrol.recordingCaptureId ?? test.recordingId }) });
+        copied.push(test); result.copied += 1;
+        continue;
+      }
+      if (!test.web) throw new Error('Its source is not on this Mac.');
       const web = test.web;
       if (!web.steps.length || web.steps.some((step) => !step.instruction.trim() || !step.assertion.trim())) throw new Error('SaySpec Cloud needs every step to have an instruction and an expected result.');
       const recordingId = web.recordingId ?? test.recordingId ?? web.provenance.recordingId;
@@ -71,7 +99,7 @@ export async function importCloudLibrary(cloud: CloudBackend, scope: TestLibrary
  */
 export async function switchTestStorage(cloud: CloudBackend | null, input: TestLibraryScope & { targetType: 'web' | 'flutter'; from: TestStorageMode; to: TestStorageMode; folderHandle?: string; signedIn: boolean; switchDespiteFailures?: boolean }): Promise<TestStorageCopyResult & { switched: boolean }> {
   const scope = { organizationId: input.organizationId, projectId: input.projectId };
-  const library = input.from === 'cloud' ? await exportCloudLibrary(requireCloud(cloud), scope) : await window.sayspec!.exportTestLibrary(scope);
+  const library = input.from === 'cloud' ? await exportCloudLibrary(requireCloud(cloud), scope, input.targetType) : await window.sayspec!.exportTestLibrary(scope);
   const result = input.to === 'cloud' ? await importCloudLibrary(requireCloud(cloud), scope, library)
     : await window.sayspec!.importTestLibrary({ ...scope, targetType: input.targetType, mode: input.to, ...(input.folderHandle ? { folderHandle: input.folderHandle } : {}), library });
   // Tests that could not be copied would drop out of view, so the switch waits for the user to confirm.

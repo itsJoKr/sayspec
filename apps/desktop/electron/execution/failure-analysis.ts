@@ -33,6 +33,32 @@ function validate(output: unknown, evidence: FailureEvidence[]): Model {
   return { expected: redact(item.expected as string), actual: redact(item.actual as string), category: item.category as Model['category'], explanation: redact(item.explanation as string), limitations: redact(item.limitations as string), nextStep: redact(item.nextStep as string), evidenceIds: [...ids] as string[] };
 }
 
+/**
+ * The frozen evidence of one failed Patrol attempt: its saved source and
+ * assertions, the device result and its text artifacts. `lead` entries come
+ * first, so they are kept when the evidence budget runs out.
+ */
+export async function collectPatrolEvidence(patrol: PatrolRunStore, scope: Scope, lead: Array<Omit<FailureEvidence, 'id'>> = []) {
+  const { organizationId, projectId, testId, attemptId } = scope;
+  const { attempt, version } = patrol.failedAttempt(scope);
+  const evidence: FailureEvidence[] = [];
+  const add = (kind: FailureEvidence['kind'], label: string, value: string, artifactHash?: string) => {
+    if (evidence.length < 24) evidence.push({ id: `e${String(evidence.length + 1).padStart(2, '0')}`, kind, label, text: bounded(value), ...(artifactHash ? { sha256: artifactHash } : {}) });
+  };
+  for (const entry of lead) add(entry.kind, entry.label, entry.text, entry.sha256);
+  add('source', `Saved Patrol source ${version.versionId} / ${version.contentHash}`, `${version.relativePath}\n${version.source}`);
+  add('assertions', 'Saved Patrol assertions', version.source.split('\n').filter((line) => /\b(?:expect|assert)\s*\(/.test(line)).join('\n') || 'No assertion text was recovered.');
+  add('framework', `${attempt.runtime.platform === 'ios' ? 'iOS' : 'Android'} attempt ${attempt.id} / ${attempt.state}`, JSON.stringify({ state: attempt.state, summary: attempt.summary, tests: attempt.tests, runtime: attempt.runtime, testContentHash: attempt.testContentHash, exitCode: attempt.exitCode }));
+  if (attempt.detail) add('log', 'Patrol failure detail', attempt.detail);
+  for (const artifact of attempt.artifacts.filter((item) => item.mimeType.startsWith('text/') || item.mimeType === 'application/json' || item.mimeType === 'application/xml').slice(0, 12)) {
+    try {
+      const read = await patrol.readArtifact({ organizationId, projectId, testId, attemptId, relativePath: artifact.relativePath });
+      add('artifact', artifact.relativePath, read.bytes.byteLength <= MAX_TEXT ? read.bytes.toString('utf8') : `${artifact.mimeType}; ${artifact.byteLength} bytes; SHA-256 ${artifact.sha256}. Content exceeds analysis budget.`, artifact.sha256);
+    } catch { add('artifact', artifact.relativePath, 'Artifact missing or failed integrity verification; contents unavailable.'); }
+  }
+  return { attempt, version, evidence };
+}
+
 export class FailureAnalysisManager {
   readonly #running = new Map<string, AbortController>();
   readonly store: SavedWebTestStore;
@@ -86,21 +112,7 @@ export class FailureAnalysisManager {
     if (!this.patrol) throw new Error('Patrol failure analysis is unavailable.');
     if (!['claude-code', 'codex'].includes(input.provider)) throw new Error('Choose a configured coding-agent provider.');
     if (this.#running.has(input.attemptId)) throw new Error('This attempt is already being analyzed.');
-    const { attempt, version } = this.patrol.failedAttempt({ organizationId, projectId, testId, attemptId });
-    const evidence: FailureEvidence[] = [];
-    const add = (kind: FailureEvidence['kind'], label: string, value: string, artifactHash?: string) => {
-      if (evidence.length < 24) evidence.push({ id: `e${String(evidence.length + 1).padStart(2, '0')}`, kind, label, text: bounded(value), ...(artifactHash ? { sha256: artifactHash } : {}) });
-    };
-    add('source', `Saved Patrol source ${version.versionId} / ${version.contentHash}`, `${version.relativePath}\n${version.source}`);
-    add('assertions', 'Saved Patrol assertions', version.source.split('\n').filter((line) => /\b(?:expect|assert)\s*\(/.test(line)).join('\n') || 'No assertion text was recovered.');
-    add('framework', `Android attempt ${attempt.id} / ${attempt.state}`, JSON.stringify({ state: attempt.state, summary: attempt.summary, tests: attempt.tests, runtime: attempt.runtime, testContentHash: attempt.testContentHash, exitCode: attempt.exitCode }));
-    if (attempt.detail) add('log', 'Patrol failure detail', attempt.detail);
-    for (const artifact of attempt.artifacts.filter((item) => item.mimeType.startsWith('text/') || item.mimeType === 'application/json' || item.mimeType === 'application/xml').slice(0, 12)) {
-      try {
-        const read = await this.patrol.readArtifact({ organizationId, projectId, testId, attemptId, relativePath: artifact.relativePath });
-        add('artifact', artifact.relativePath, read.bytes.byteLength <= MAX_TEXT ? read.bytes.toString('utf8') : `${artifact.mimeType}; ${artifact.byteLength} bytes; SHA-256 ${artifact.sha256}. Content exceeds analysis budget.`, artifact.sha256);
-      } catch { add('artifact', artifact.relativePath, 'Artifact missing or failed integrity verification; contents unavailable.'); }
-    }
+    const { attempt, version, evidence } = await collectPatrolEvidence(this.patrol, { organizationId, projectId, testId, attemptId });
     const frozen = { attemptId: attempt.id, versionId: version.versionId, testVersionHash: version.contentHash, environmentHash: attempt.runtime.environmentHash, state: attempt.state, evidence };
     const inputHash = sha(JSON.stringify(frozen));
     const controller = new AbortController(); const directory = await mkdtemp(path.join(tmpdir(), 'sayspec-patrol-analysis-'));

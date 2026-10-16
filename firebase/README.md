@@ -4,7 +4,7 @@ This folder is the optional cloud backend behind the desktop app's Firebase `Clo
 
 - **Accounts:** Firebase Auth with email and password, shared by the desktop app and the portal.
 - **Workspaces:** company codes and roles, plus a per-workspace seat limit.
-- **Shared tests:** a shared test library, drafts and suites, with review comments.
+- **Shared tests:** a shared test library, drafts and suites, with review comments. Flutter tests are stored as immutable Patrol versions that each Mac pulls and runs locally.
 - **Evidence sharing:** recordings and Flutter runs that the user explicitly chose to share.
 - **Gemini transcription:** narration transcribed by Gemini on Vertex AI for Beta and Pro workspaces, within a monthly allowance (`functions/src/transcription.ts`).
 
@@ -65,6 +65,7 @@ npm run test:emulator:managed-fix
 npm run test:emulator:application-fix
 npm run test:emulator:recording-share
 npm run test:emulator:flutter-share
+npm run test:emulator:cloud-patrol-storage
 npm run test:emulator:portable-pro
 npm run test:emulator:transcription
 ```

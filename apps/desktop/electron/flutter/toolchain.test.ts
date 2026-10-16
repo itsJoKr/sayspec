@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { resolveProjectFlutterToolchain } from './toolchain.ts';
+import { readPubspecVersion, resolveProjectFlutterToolchain } from './toolchain.ts';
 import { RECORDER_SDK_VERSION } from './recorder-sdk.ts';
 import { previewFlutterIntegration } from './integration.ts';
 
@@ -95,5 +95,18 @@ test('a recorder declared as a machine-local path is re-pinned to pub.dev', asyn
     await writeFile(path.join(project, 'pubspec.yaml'), pubspec.proposedText);
     const pinned = await previewFlutterIntegration({ sourcePath: project, appId: '' });
     assert.equal(pinned.files.some((file) => file.relativePath === 'pubspec.yaml'), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('the app version is read from pubspec.yaml', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sayspec-pubspec-version-'));
+  try {
+    const read = async (pubspec: string) => { await writeFile(path.join(root, 'pubspec.yaml'), pubspec); return readPubspecVersion(root); };
+    assert.equal(await read('name: shop\nversion: 2.4.0+57\n\nenvironment:\n  sdk: ^3.5.0\n'), '2.4.0+57');
+    assert.equal(await read('name: shop\nversion: "1.0.0" # release\n'), '1.0.0');
+    // A nested `version:` key (a dependency's) is not the app's version.
+    assert.equal(await read('name: shop\ndependencies:\n  foo:\n    version: 1.2.3\n'), undefined);
+    await rm(path.join(root, 'pubspec.yaml'));
+    assert.equal(await readPubspecVersion(root), undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

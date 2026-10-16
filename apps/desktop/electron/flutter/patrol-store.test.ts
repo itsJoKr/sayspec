@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import type { PatrolRunConsoleEvent } from '@sayspec/contracts';
 import { PatrolRunStore } from './patrol-store.ts';
 import { assertSafeTestPath, PatrolRunner } from './patrol-runner.ts';
 import { FailureAnalysisManager } from '../execution/failure-analysis.ts';
@@ -101,7 +102,8 @@ test('Patrol test runs freeze versions, record every test as a run attempt and n
 
     // Without a source folder every test is blocked before anything executes;
     // each still becomes an inspectable attempt of this run and the run finishes.
-    const runner = new PatrolRunner({ store, captures: { devices: async () => [] } as never });
+    const consoleEvents: PatrolRunConsoleEvent[] = [];
+    const runner = new PatrolRunner({ store, captures: { devices: async () => [] } as never, events: { onConsole: (event) => consoleEvents.push(event) } });
     const started = await runner.startRun({ organizationId: 'local', projectId: 'project_one', runId: run.id, deviceId: 'emulator-5554' }, '');
     assert.equal(started.state, 'running'); assert.equal(started.activeTestId, undefined, 'a test becomes active only when Patrol starts it');
     await assert.rejects(() => runner.startRun({ organizationId: 'local', projectId: 'project_one', runId: run.id, deviceId: 'emulator-5554' }, ''), /already running/);
@@ -111,6 +113,17 @@ test('Patrol test runs freeze versions, record every test as a run attempt and n
     const { runs, attempts } = store.runs('project_one', 'local');
     assert.equal(runs.length, 1);
     assert.deepEqual(attempts.map((attempt) => [attempt.testId, attempt.versionId, attempt.state, attempt.runId]), [[login.id, login.versionId, 'blocked', run.id], [cart.id, cart.versionId, 'blocked', run.id]]);
+
+    // The run's console streams why it could not run, and a view attaching
+    // later gets the same text; after a restart the recorded reason stands in.
+    const scope = { organizationId: 'local', projectId: 'project_one', runId: run.id };
+    for (let poll = 0; poll < 100 && !consoleEvents.some((event) => event.text.includes('The run finished.')); poll += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    const streamed = consoleEvents.map((event) => event.text).join('');
+    assert.ok(consoleEvents.every((event, index) => event.runId === run.id && event.startedAt === started.startedAt && event.seq === index + 1));
+    assert.equal(streamed, 'Checking emulator-5554, Flutter and Patrol…\nBlocked: Select the Flutter project folder before running a Patrol test.\nThe run finished.\n');
+    assert.deepEqual(await runner.console(scope), { text: streamed, seq: consoleEvents.length });
+    assert.deepEqual(await new PatrolRunner({ store, captures: { devices: async () => [] } as never }).console(scope), { text: 'Select the Flutter project folder before running a Patrol test.', seq: 0 });
+    await assert.rejects(() => runner.console({ ...scope, projectId: 'project_two' }), /unknown in this project/);
 
     await store.updateRun(run.id, { state: 'running', activeTestId: cart.id });
     const reopened = new PatrolRunStore(root); await reopened.initialize();

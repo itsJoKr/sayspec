@@ -5,6 +5,7 @@ import { useCloud } from './cloud/context';
 import { announceTestStorageChange } from './test-repository';
 import { countTests, switchTestStorage } from './test-storage-transfer';
 import { Button } from './ui';
+import { GitSummary } from './git-changes';
 
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace(/^(Firebase)?Error:\s*/, '') : 'Test storage could not be changed.'; }
 
@@ -15,9 +16,8 @@ export const STORAGE_LABELS: Record<TestStorageMode, { title: string; detail: st
 };
 
 /** Why SaySpec Cloud cannot be chosen, or undefined when it can. The server enforces the same rules. */
-export function cloudUnavailableReason(input: { signedIn: boolean; plan: PlanKind | null; targetType: 'web' | 'flutter' }) {
+export function cloudUnavailableReason(input: { signedIn: boolean; plan: PlanKind | null }) {
   if (!input.signedIn) return 'Sign in to a workspace on the Pro plan to use SaySpec Cloud.';
-  if (input.targetType !== 'web') return 'SaySpec Cloud stores Web tests only for now.';
   if (!isProPlan(input.plan)) return 'Available on the Pro plan.';
   return undefined;
 }
@@ -74,11 +74,12 @@ export function TestStorageSettingsCard({ organizationId, projectId, targetType,
         {(!settings.folder || !settings.folder.available) && <Button type="button" onClick={() => void relinkFolder()}>Choose folder on this Mac</Button>}
       </div>}
     </div>}
+    {mode === 'folder' && settings?.folder?.available && <p className="control-help"><GitSummary key={settings.folder.displayPath} target={{ kind: 'tests', organizationId, projectId }} /></p>}
     {settings?.folder && !settings.folder.available && mode === 'folder' && <p className="inline-error" role="alert">The folder is missing. Reconnect the drive or choose the folder again.</p>}
     <button type="button" className="text-button" data-testid="switch-test-storage" disabled={!mode || !canManage} onClick={() => setSwitching(true)}>Switch storage</button>
     {!canManage && <p className="control-help">Only an organization owner or admin can switch where this project’s tests are stored.</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {mode && switching && <SwitchStorageDialog organizationId={organizationId} projectId={projectId} targetType={targetType} signedIn={signedIn} current={mode} cloudReason={cloudUnavailableReason({ signedIn, plan, targetType })} onClose={() => setSwitching(false)} />}
+    {mode && switching && <SwitchStorageDialog organizationId={organizationId} projectId={projectId} targetType={targetType} signedIn={signedIn} current={mode} cloudReason={cloudUnavailableReason({ signedIn, plan })} onClose={() => setSwitching(false)} />}
   </section>;
 }
 

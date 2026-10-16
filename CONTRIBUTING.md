@@ -8,7 +8,8 @@ Use Node.js 24 (`.nvmrc`) on macOS, then:
 
 ```sh
 npm ci
-npm run dev            # local-only app, no backend
+npm run dev            # local-only app, no backend (uses apps/desktop/.env.live instead if you have one)
+npm run dev:local      # always local-only
 npm run dev:emulator   # with the Firebase backend on local emulators (see firebase/README.md)
 ```
 

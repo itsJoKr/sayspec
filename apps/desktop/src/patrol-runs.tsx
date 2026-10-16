@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import type { FlutterDeviceSummary, LocalSourceSelection, PatrolAttempt, PatrolRun, PatrolRunAnalysisEvent, PatrolSavedTest } from '@sayspec/contracts';
+import type { FailureAnalysis, FlutterDeviceSummary, LocalSourceSelection, PatrolAttempt, PatrolRun, PatrolRunAnalysisEvent, PatrolRunConsoleEvent, PatrolRunIssue, PatrolSavedTest } from '@sayspec/contracts';
+import type { CloudTest } from './cloud/backend';
+import { useCloud } from './cloud/context';
+import { CLOUD_PATROL_TESTS_SYNCED, syncCloudPatrolTests } from './cloud-patrol-tests';
 import { RecordLayout, RecordingsSidebar } from './recordings-sidebar';
 import { Button, StatePanel } from './ui';
 import { DeviceSelect } from './device-select';
@@ -11,6 +14,13 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message.re
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 type ItemState = PatrolAttempt['state'] | 'waiting' | 'not-run';
+
+/** With SaySpec Cloud storage the runnable tests are the cloud's (already pulled to this Mac), under their cloud names. */
+function cloudListed(local: PatrolSavedTest[], cloudTests: readonly CloudTest[] | null) {
+  if (!cloudTests) return local;
+  const titles = new Map(cloudTests.map((test) => [test.id, test.title]));
+  return local.filter((test) => titles.has(test.id)).map((test) => ({ ...test, title: titles.get(test.id) || test.title }));
+}
 
 function defaultRunName() {
   const now = new Date();
@@ -84,16 +94,21 @@ function ItemStatus({ state }: { state: ItemState }) {
  * once and runs every test on the chosen device. Each test shows only its
  * result and its log. When a test fails, the coding agent starts analyzing the
  * run in a second tab, and its HTML report opens in the
- * browser once written.
+ * browser once written. The report's issues are listed with the run; an app
+ * bug or a wrong test can be handed to a fix session from there (`onOpenFix`).
  *
  * Tests selected in the library arrive as `queuedTestIds` and preselect a new run.
+ * With SaySpec Cloud storage (`cloudStorage`) the cloud's tests are pulled to
+ * this Mac first; they still run here, never in the cloud.
  */
-export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], source, onChooseSource }: {
+export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], cloudStorage = false, source, onChooseSource, onOpenFix }: {
   projectId: string;
   queuedTestIds?: string[];
   organizationId: string;
+  cloudStorage?: boolean;
   source?: LocalSourceSelection;
   onChooseSource: (source: LocalSourceSelection) => void;
+  onOpenFix?: (target: { attempt: PatrolAttempt; analysis: FailureAnalysis }) => void;
 }) {
   const [tests, setTests] = useState<PatrolSavedTest[]>([]);
   const [devices, setDevices] = useState<FlutterDeviceSummary[]>([]);
@@ -109,16 +124,41 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
   const [error, setError] = useState('');
   const [tab, setTab] = useState<'results' | 'analysis'>('results');
   const [log, setLog] = useState<{ title: string; attemptId?: string }>();
+  const [notice, setNotice] = useState('');
+  const cloud = useCloud();
+  const cloudSync = cloudStorage ? cloud : null;
+  const cloudTestsRef = useRef<CloudTest[] | null>(null);
+
+  /** Pulls the cloud's current tests to this Mac; offline, the tests last pulled still run. */
+  async function syncCloud() {
+    if (!cloudSync) return;
+    const synced = await syncCloudPatrolTests(cloudSync, { organizationId, projectId }).catch(() => null);
+    if (synced) cloudTestsRef.current = synced.tests;
+    setNotice(synced ? synced.problems.join(' ') : 'SaySpec Cloud could not be reached, so these are the tests last copied to this Mac.');
+  }
 
   async function refreshSetup() {
     try {
+      await syncCloud();
       const [nextTests, nextDevices] = await Promise.all([window.sayspec!.listPatrolTests({ projectId, organizationId }), window.sayspec!.listFlutterDevices()]);
-      setTests(nextTests); setDevices(nextDevices);
+      setTests(cloudListed(nextTests, cloudTestsRef.current)); setDevices(nextDevices);
       setDeviceId((current) => nextDevices.some((device) => device.id === current && device.state === 'ready') ? current : nextDevices.find((device) => device.state === 'ready')?.id ?? '');
     } catch (reason) { setError(messageOf(reason)); }
   }
 
-  useEffect(() => { void refreshSetup(); }, [projectId, organizationId]);
+  useEffect(() => { void refreshSetup(); }, [projectId, organizationId, cloudSync]);
+  useEffect(() => {
+    if (!cloudSync) return;
+    // A sync started elsewhere (a test was generated, SaySpec regained focus) may have pulled new tests.
+    const onSynced = (event: Event) => {
+      const detail = (event as CustomEvent<{ organizationId: string; projectId: string; tests: CloudTest[] }>).detail;
+      if (detail.organizationId !== organizationId || detail.projectId !== projectId) return;
+      cloudTestsRef.current = detail.tests;
+      void window.sayspec!.listPatrolTests({ projectId, organizationId }).then((local) => setTests(cloudListed(local, detail.tests))).catch(() => undefined);
+    };
+    window.addEventListener(CLOUD_PATROL_TESTS_SYNCED, onSynced);
+    return () => window.removeEventListener(CLOUD_PATROL_TESTS_SYNCED, onSynced);
+  }, [cloudSync, organizationId, projectId]);
   useEffect(() => {
     let live = true;
     const poll = async () => {
@@ -145,6 +185,8 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
     try { await action(); } catch (reason) { setError(messageOf(reason)); } finally { setBusy(false); }
   }
   const create = () => act(async () => {
+    // Freeze the newest versions: a teammate may have changed a test since this view opened.
+    await syncCloud();
     const ordered = tests.filter((test) => picked.includes(test.id)).map((test) => test.id);
     const run = await window.sayspec!.createPatrolRun({ organizationId, projectId, testIds: ordered, name });
     setRuns((previous) => [...previous, run]); setRunId(run.id);
@@ -163,6 +205,10 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
     setTab('analysis');
   });
   const openReport = (run: PatrolRun) => act(() => window.sayspec!.openPatrolRunReport({ organizationId, projectId, runId: run.id }));
+  const fix = (run: PatrolRun, issue: PatrolRunIssue, testId: string) => act(async () => {
+    if (!source) throw new Error('Choose the Flutter project folder so the fix can read and change the app.');
+    onOpenFix?.(await window.sayspec!.preparePatrolIssueFix({ organizationId, projectId, runId: run.id, issueId: issue.id, testId }));
+  });
   const stop = (run: PatrolRun) => act(async () => {
     const stopped = await window.sayspec!.stopPatrolRun({ organizationId, projectId, runId: run.id });
     setRuns((previous) => previous.map((item) => item.id === stopped.id ? stopped : item));
@@ -189,7 +235,7 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
     onNew={openNew}
   />;
 
-  const messages = error && <p className="inline-error" role="alert">{error}</p>;
+  const messages = <>{notice && <p className="control-help" role="status">{notice}</p>}{error && <p className="inline-error" role="alert">{error}</p>}</>;
   const sourceCallout = !source && <p className="setup-callout" role="note">Choose the Flutter project folder so SaySpec can materialize and build the saved tests. <Button onClick={() => void window.sayspec!.chooseSourceDirectory().then((next) => next && onChooseSource(next)).catch((reason) => setError(messageOf(reason)))}>Choose source folder</Button></p>;
 
   if (!loaded) return <RecordLayout title="Runs" sidebar={sidebar}>{messages}</RecordLayout>;
@@ -206,7 +252,7 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
             <div className="patrol-run-picker__list"><label className="patrol-run-picker__all"><input type="checkbox" checked={allPicked} onChange={() => setPicked(allPicked ? [] : tests.map((test) => test.id))} />Select all</label>
             {tests.map((test) => <label key={test.id}>
               <input type="checkbox" checked={picked.includes(test.id)} onChange={(event) => setPicked((previous) => event.target.checked ? [...previous, test.id] : previous.filter((id) => id !== test.id))} />
-              <span><strong>{test.title}</strong><small>v{test.version} · {test.relativePath}</small></span>
+              <span><strong>{test.title}</strong><small>v{test.version} · {test.relativePath}{test.appVersion ? ` · recorded on app ${test.appVersion}` : ''}</small></span>
             </label>)}</div>
           </fieldset>
           <p className="control-help">Each test runs at its latest saved version, frozen when the run is created. The app is built once and every test runs on the device you choose when you start it.</p>
@@ -222,6 +268,8 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
   const counts = runCounts(run, attempts);
   const analysis = run.analysis;
   const hasRunLog = Boolean(run.artifacts?.some((artifact) => artifact.relativePath === 'patrol-run.log'));
+  // A run that could not execute a test opens its console, where the reason is.
+  const couldNotRun = !running && run.items.some((item) => ['blocked', 'infrastructure-error'].includes(itemProgress(run, attempts, item.testId).state));
   const canAnalyze = !running && run.state !== 'queued' && counts.failed > 0 && analysis?.state !== 'running' && analysis?.state !== 'ready';
   const agent = analysis?.provider === 'codex' ? 'Codex' : 'Claude';
   const shownTab = analysis ? tab : 'results';
@@ -260,6 +308,10 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
         {analysis?.state === 'failed' && <p className="patrol-run-summary__analysis patrol-run-summary__analysis--failed">Analysis did not finish: {analysis.detail ?? 'no report was written.'}</p>}
         {canAnalyze && <Button disabled={busy} onClick={() => void analyzeAgain(run)}>{analysis ? 'Analyze again' : 'Analyze failures'}</Button>}
       </div>}
+      {analysis?.state === 'ready' && analysis.issues && <RunIssues run={run} issues={analysis.issues} agent={agent}
+        fixable={(testId) => !running && ['failed', 'infrastructure-error'].includes(itemProgress(run, attempts, testId).state)}
+        disabled={busy || !source} onFix={onOpenFix ? (issue, testId) => void fix(run, issue, testId) : undefined} />}
+      {run.startedAt && <RunConsole key={`${run.id}:${run.startedAt}`} organizationId={organizationId} projectId={projectId} runId={run.id} startedAt={run.startedAt} running={running} failed={couldNotRun} />}
       {analysis && <div className="review-tabs" role="tablist" aria-label="Run details">
         <button type="button" role="tab" aria-selected={shownTab === 'results'} onClick={() => setTab('results')}>Results</button>
         <button type="button" role="tab" aria-selected={shownTab === 'analysis'} onClick={() => setTab('analysis')}>{agent} analysis{analysis.state === 'running' && <span className="patrol-run-tab__live" aria-label="running" />}</button>
@@ -283,6 +335,83 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], sour
       {log && <LogDialog title={log.title} load={() => window.sayspec!.readPatrolRunLog({ organizationId, projectId, runId: run.id, ...(log.attemptId ? { attemptId: log.attemptId } : {}) })} onClose={() => setLog(undefined)} />}
     </section>
   </RecordLayout>;
+}
+
+const VERDICTS: Record<PatrolRunIssue['verdict'], string> = { 'app-bug': 'App bug', 'bad-test': 'Test bug', environment: 'Environment', flaky: 'Flaky', unclear: 'Unclear' };
+
+/**
+ * The analysis report's issues, one card each. An app bug gets one fix for
+ * the app; a wrong test gets a fix per failed test, because each saved test
+ * is its own file and version.
+ */
+function RunIssues({ run, issues, agent, fixable, disabled, onFix }: { run: PatrolRun; issues: readonly PatrolRunIssue[]; agent: string; fixable: (testId: string) => boolean; disabled: boolean; onFix?: (issue: PatrolRunIssue, testId: string) => void }) {
+  if (!issues.length) return <p className="control-help">The report lists no issues. Open it for the details.</p>;
+  const title = (testId: string) => run.items.find((item) => item.testId === testId)?.title ?? testId;
+  return <section className="patrol-run-issues" aria-labelledby="patrol-run-issues-title">
+    <h3 id="patrol-run-issues-title">Issues <span>{issues.length}</span></h3>
+    <ol>{issues.map((issue) => {
+      const failed = issue.testIds.filter(fixable);
+      const fixes = !onFix || !failed.length ? []
+        : issue.verdict === 'app-bug' ? [{ testId: failed[0]!, label: `Fix app with ${agent}` }]
+        : issue.verdict === 'bad-test' ? failed.map((testId) => ({ testId, label: failed.length > 1 ? `Fix “${title(testId)}” with ${agent}` : `Fix test with ${agent}` }))
+        : [];
+      return <li key={issue.id} className="patrol-run-issue">
+        <span className={`patrol-run-issue__verdict patrol-run-issue__verdict--${issue.verdict}`}>{VERDICTS[issue.verdict]}</span>
+        <div className="patrol-run-issue__body">
+          <p className="patrol-run-issue__summary">{issue.summary}</p>
+          <p className="patrol-run-issue__tests">{issue.testIds.length ? issue.testIds.map(title).join(' · ') : 'No test of this run was named.'}</p>
+          {(issue.expected || issue.actual) && <dl className="patrol-run-issue__outcome">{issue.expected && <><dt>Expected</dt><dd>{issue.expected}</dd></>}{issue.actual && <><dt>Actual</dt><dd>{issue.actual}</dd></>}</dl>}
+          {issue.nextStep && <p className="patrol-run-issue__next"><strong>Next:</strong> {issue.nextStep}</p>}
+          {issue.evidence.length > 0 && <details><summary>Log lines</summary><pre>{issue.evidence.join('\n')}</pre></details>}
+          {fixes.length > 0 && <div className="patrol-run-issue__actions">{fixes.map((item) => <Button key={item.testId} variant="primary" disabled={disabled} onClick={() => onFix!(issue, item.testId)}>{item.label}</Button>)}</div>}
+        </div>
+      </li>;
+    })}</ol>
+  </section>;
+}
+
+const MAX_CONSOLE_LINES = 5000;
+const consoleLines = (text: string) => text ? text.replace(/\n$/, '').split('\n') : [];
+
+/**
+ * The run's console: Patrol's build and device output, live while the run
+ * executes. Collapsed by default like the recording launch console, and
+ * opened when the run could not execute, so the cause is one glance away.
+ */
+function RunConsole({ organizationId, projectId, runId, startedAt, running, failed }: { organizationId: string; projectId: string; runId: string; startedAt: string; running: boolean; failed: boolean }) {
+  const [lines, setLines] = useState<string[]>();
+  const [open, setOpen] = useState(false);
+  const outputRef = useRef<HTMLPreElement>(null);
+  // Follows new output unless the user scrolled up to read.
+  const followRef = useRef(true);
+  useEffect(() => { if (failed) setOpen(true); }, [failed]);
+  useEffect(() => {
+    let live = true;
+    let seq = -1;
+    const queued: PatrolRunConsoleEvent[] = [];
+    const apply = (event: PatrolRunConsoleEvent) => {
+      if (event.seq <= seq) return;
+      seq = event.seq;
+      setLines((previous) => [...(previous ?? []), ...consoleLines(event.text)].slice(-MAX_CONSOLE_LINES));
+    };
+    // Events are queued until the snapshot arrives, so nothing is lost or shown twice.
+    const unsubscribe = window.sayspec!.onPatrolRunConsole((event) => { if (event.runId !== runId || event.startedAt !== startedAt) return; if (seq < 0) queued.push(event); else apply(event); });
+    void window.sayspec!.attachPatrolRunConsole({ organizationId, projectId, runId }).then((snapshot) => {
+      if (!live) return;
+      setLines(consoleLines(snapshot.text).slice(-MAX_CONSOLE_LINES)); seq = snapshot.seq;
+      for (const event of queued.splice(0)) apply(event);
+    }).catch(() => { if (live) { setLines([]); seq = 0; } });
+    return () => { live = false; unsubscribe(); };
+  }, [organizationId, projectId, runId, startedAt]);
+  useEffect(() => {
+    const output = outputRef.current;
+    if (open && output && followRef.current) output.scrollTop = output.scrollHeight;
+  }, [open, lines]);
+  const count = lines?.length ?? 0;
+  return <details className="launch-console" open={open} onToggle={(event) => { followRef.current = true; setOpen(event.currentTarget.open); }}>
+    <summary>Run console <span>{count ? plural(count, 'line') : running || !lines ? 'waiting for output…' : 'no output was kept'}</span></summary>
+    <pre ref={outputRef} aria-label="Patrol run output" tabIndex={0} onScroll={(event) => { const output = event.currentTarget; followRef.current = output.scrollHeight - output.scrollTop - output.clientHeight < 24; }}>{lines?.join('\n')}</pre>
+  </details>;
 }
 
 /** A test's or the run's log, in a modal the user closes with Escape or Close. */

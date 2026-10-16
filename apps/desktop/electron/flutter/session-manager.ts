@@ -13,7 +13,7 @@ import { FlutterCaptureStore } from './capture-store.ts';
 import { readableFlutterRunLines } from './flutter-run-log.ts';
 import { flutterDeviceId, simulatorHasApp, xcodeBundleIds } from './ios-patrol.ts';
 import { RECORDER_SCHEMA_VERSION, RECORDER_SDK_VERSION } from './recorder-sdk.ts';
-import { resolveProjectFlutterToolchain } from './toolchain.ts';
+import { readPubspecVersion, resolveProjectFlutterToolchain } from './toolchain.ts';
 
 const REQUIRED_SCHEMA = RECORDER_SCHEMA_VERSION;
 const SDK_PACKAGE = 'sayspec_flutter_recorder';
@@ -31,6 +31,8 @@ interface ActiveSession {
   projectId: string;
   input: Omit<FlutterCaptureStartInput, 'sourceHandle'>;
   sourcePath: string;
+  /** The app's pubspec.yaml version when this launch started; every recording of the session keeps it. */
+  appVersion?: string;
   device: FlutterDeviceSummary;
   server: FlutterCaptureServer;
   /** The current test: `preparing` until Record is pressed on the device. */
@@ -299,10 +301,11 @@ export class FlutterCaptureSessionManager {
       if (target && !(await readFile(path.join(sourcePath, target)).then(() => true, () => false))) throw new Error(`The ${input.entryPoint.name} entry point runs ${target}, which is not in the selected project. Update it in Settings → Entry points.`);
     }
     const flutter = await resolveProjectFlutterToolchain(sourcePath);
+    const appVersion = await readPubspecVersion(sourcePath);
 
     const sessionId = `flutter_session_${randomUUID()}`;
     const session: ActiveSession = {
-      sessionId, projectId: input.projectId, input, sourcePath, device,
+      sessionId, projectId: input.projectId, input, sourcePath, ...(appVersion ? { appVersion } : {}), device,
       server: undefined as unknown as FlutterCaptureServer,
       draft: undefined as unknown as CaptureDraft,
       completion: deferred(), deviceCompleted: false,
@@ -377,6 +380,7 @@ export class FlutterCaptureSessionManager {
       platform: session.device.platform,
       appId: session.packageName ?? requestedAppId(session.input) ?? 'unknown',
       ...(session.input.entryPoint ? { entryPoint: { name: session.input.entryPoint.name, command: session.input.entryPoint.command } } : {}),
+      ...(session.appVersion ? { appVersion: session.appVersion } : {}),
       recorderSdkVersion: 'unknown',
       recorderSchemaVersion: REQUIRED_SCHEMA,
     });

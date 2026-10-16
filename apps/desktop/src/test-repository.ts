@@ -27,23 +27,24 @@ export interface TestRepository {
   supportsReview: boolean;
   renameTest(testId: string, title: string): Promise<void>;
   deleteTest(testId: string): Promise<void>;
-  saveSuite(change: SuiteSave): Promise<void>;
+  /** Creates or renames a suite and resolves to its ID, which a storage folder derives from the name. */
+  saveSuite(change: SuiteSave): Promise<string>;
   moveTest(testId: string, targetSuiteId: string | null): Promise<void>;
 }
 
 /** Where a project's tests are read from, decided by its storage setting and whether the workspace is signed in. */
-export type RepositorySource = { organizationId: string; projectId: string; signedIn: boolean; mode: TestStorageMode };
+export type RepositorySource = { organizationId: string; projectId: string; signedIn: boolean; mode: TestStorageMode; targetType?: 'web' | 'flutter' };
 
 export function useTestRepository(source: RepositorySource): TestRepository {
   const backend = useCloud();
   const cloud = Boolean(backend) && source.signedIn && source.mode === 'cloud';
-  const cloudRepository = useCloudRepository(cloud ? backend : null, source.organizationId, source.projectId);
+  const cloudRepository = useCloudRepository(cloud ? backend : null, source.organizationId, source.projectId, source.targetType !== 'flutter');
   const deviceRepository = useDeviceRepository(!cloud, source.organizationId, source.projectId, source.mode);
   return cloud ? cloudRepository : deviceRepository;
 }
 
-/** SaySpec Cloud storage for signed-in workspaces, paged on the server. */
-function useCloudRepository(backend: CloudBackend | null, organizationId: string, projectId: string): TestRepository {
+/** SaySpec Cloud storage for signed-in workspaces, paged on the server. Reviews cover Web tests only for now. */
+function useCloudRepository(backend: CloudBackend | null, organizationId: string, projectId: string, supportsReview: boolean): TestRepository {
   const [tests, setTests] = useState<RepositoryTest[]>([]); const [suites, setSuites] = useState<TestSuite[]>([]);
   const [status, setStatus] = useState<TestRepository['status']>('loading'); const [retryKey, setRetryKey] = useState(0);
   const [page, setPage] = useState(0); const [cursors, setCursors] = useState<Array<CloudPageCursor | null>>([null]); const [last, setLast] = useState<CloudPageCursor | null>(null);
@@ -62,13 +63,13 @@ function useCloudRepository(backend: CloudBackend | null, organizationId: string
   }, [backend, organizationId, projectId, page, retryKey, cursors]);
   const scope = { organizationId, projectId };
   return {
-    kind: 'cloud', status, tests, suites, page, hasNext: tests.length >= LIBRARY_PAGE_SIZE, supportsReview: true,
+    kind: 'cloud', status, tests, suites, page, hasNext: tests.length >= LIBRARY_PAGE_SIZE, supportsReview,
     nextPage() { if (!last || tests.length < LIBRARY_PAGE_SIZE) return; setCursors((value) => [...value.slice(0, page + 1), last]); setPage((value) => value + 1); },
     previousPage() { setPage((value) => Math.max(0, value - 1)); },
     reload() { setRetryKey((value) => value + 1); },
     async renameTest(testId, title) { await backend!.tests.rename({ ...scope, testId, title }); },
     async deleteTest(testId) { await backend!.tests.archive({ ...scope, testId }); },
-    async saveSuite(change) { await backend!.tests.saveSuite({ ...scope, ...change }); },
+    async saveSuite(change) { await backend!.tests.saveSuite({ ...scope, ...change }); return change.suiteId; },
     async moveTest(testId, targetSuiteId) { await backend!.tests.moveTest({ ...scope, testId, targetSuiteId }); },
   };
 }
@@ -94,14 +95,14 @@ function useDeviceRepository(enabled: boolean, organizationId: string, projectId
   }, [enabled, projectId, mode, reload]);
   const lastPage = Math.max(0, Math.ceil(all.length / LIBRARY_PAGE_SIZE) - 1);
   const current = Math.min(page, lastPage);
-  async function mutate(action: () => Promise<unknown>) { await action(); await load(); }
+  async function mutate<T>(action: () => Promise<T>) { const result = await action(); await load(); return result; }
   return {
     kind: mode === 'folder' ? 'folder' : 'device', status, suites, page: current,
     tests: all.slice(current * LIBRARY_PAGE_SIZE, (current + 1) * LIBRARY_PAGE_SIZE), hasNext: current < lastPage, supportsReview: false,
     nextPage() { setPage(Math.min(current + 1, lastPage)); }, previousPage() { setPage(Math.max(0, current - 1)); }, reload,
     renameTest: (testId, title) => mutate(() => window.sayspec!.renameLibraryTest({ ...scope, testId, title })),
     deleteTest: (testId) => mutate(() => window.sayspec!.deleteLibraryTest({ ...scope, testId })),
-    saveSuite: (change) => mutate(() => window.sayspec!.saveLibrarySuite({ ...scope, ...change, projectId })),
+    saveSuite: async (change) => (await mutate(() => window.sayspec!.saveLibrarySuite({ ...scope, ...change, projectId }))).id,
     moveTest: (testId, targetSuiteId) => mutate(() => window.sayspec!.moveLibraryTest({ ...scope, testId, targetSuiteId })),
   };
 }

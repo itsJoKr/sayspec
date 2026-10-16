@@ -20,6 +20,9 @@ const bridge: DesktopBridge = {
   syncCloudTestInstructions: (input) => ipcRenderer.invoke('test-instructions:sync-cloud', input),
   exportTestLibrary: (input) => ipcRenderer.invoke('test-storage:export', input),
   importTestLibrary: (input) => ipcRenderer.invoke('test-storage:import', input),
+  listPendingCloudPatrolTests: (input) => ipcRenderer.invoke('test-storage:cloud-patrol-pending', input),
+  markCloudPatrolTestUploaded: (input) => ipcRenderer.invoke('test-storage:cloud-patrol-uploaded', input),
+  pullCloudPatrolTests: (input) => ipcRenderer.invoke('test-storage:cloud-patrol-pull', input),
   setTestAuthor: (input) => ipcRenderer.invoke('test-storage:set-author', input),
   getTestLibrary: (input) => ipcRenderer.invoke('test-library:get', input),
   renameLibraryTest: (input) => ipcRenderer.invoke('test-library:rename-test', input),
@@ -108,6 +111,12 @@ const bridge: DesktopBridge = {
   deletePatrolRun: (input) => ipcRenderer.invoke('patrol-run:delete', input),
   readPatrolArtifact: (input) => ipcRenderer.invoke('patrol:artifact', input),
   readPatrolRunLog: (input) => ipcRenderer.invoke('patrol-run:log', input),
+  attachPatrolRunConsole: (input) => ipcRenderer.invoke('patrol-run:console', input),
+  onPatrolRunConsole: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value);
+    ipcRenderer.on('patrol-run:console-event', handler);
+    return () => ipcRenderer.removeListener('patrol-run:console-event', handler);
+  },
   attachPatrolRunAnalysis: (input) => ipcRenderer.invoke('patrol-run-analysis:attach', input),
   writePatrolRunAnalysis: (input) => ipcRenderer.invoke('patrol-run-analysis:write', input),
   resizePatrolRunAnalysis: (input) => ipcRenderer.invoke('patrol-run-analysis:resize', input),
@@ -118,7 +127,16 @@ const bridge: DesktopBridge = {
     ipcRenderer.on('patrol-run-analysis:event', handler);
     return () => ipcRenderer.removeListener('patrol-run-analysis:event', handler);
   },
+  preparePatrolIssueFix: (input) => ipcRenderer.invoke('patrol-run-analysis:prepare-fix', input),
+  listPatrolTestFixProposals: (input) => ipcRenderer.invoke('patrol-test-fix:list', input),
+  startPatrolTestFixSession: (input) => ipcRenderer.invoke('patrol-test-fix:start', input),
+  decidePatrolTestFix: (input) => ipcRenderer.invoke('patrol-test-fix:decide', input),
+  applyPatrolTestFix: (input) => ipcRenderer.invoke('patrol-test-fix:apply', input),
   listPatrolLeases: () => ipcRenderer.invoke('patrol:leases'),
+  getGitView: (input) => ipcRenderer.invoke('git:view', input),
+  commitGitChanges: (input) => ipcRenderer.invoke('git:commit', input),
+  pushGitCommit: (input) => ipcRenderer.invoke('git:push', input),
+  openGitPullRequest: (input) => ipcRenderer.invoke('git:pull-request', input),
   requestMicrophoneAccess: () => ipcRenderer.invoke('recording:microphone-access'),
   startWebRecording: (input) => ipcRenderer.invoke('recording:start-web', input),
   beginRecordingSegment: (input) => ipcRenderer.invoke('recording:begin-segment', input),

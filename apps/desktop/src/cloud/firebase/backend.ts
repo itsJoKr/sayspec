@@ -3,7 +3,7 @@ import { browserLocalPersistence, connectAuthEmulator, createUserWithEmailAndPas
 import { collection, connectFirestoreEmulator, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, orderBy, query, startAfter, where, type DocumentData, type DocumentSnapshot, type QueryConstraint } from 'firebase/firestore';
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from 'firebase/functions';
 import { connectStorageEmulator, getStorage, ref, uploadBytesResumable } from 'firebase/storage';
-import { planKind, type TestSuite } from '@sayspec/contracts';
+import { planKind, type CloudPatrolTestVersion, type TestSuite } from '@sayspec/contracts';
 import { joinFailure } from '../../join-code';
 import type { CloudBackend, CloudPageCursor, CloudSuite, CloudTest, CloudUser, JoinResult, OrganizationScope, ProjectRef, ProjectScope, ShareUpload } from '../backend';
 import { authErrorState } from './auth-errors';
@@ -22,6 +22,18 @@ function toCloudTest(id: string, data: DocumentData): CloudTest {
     authorLabel: typeof data.authorLabel === 'string' ? data.authorLabel : undefined,
     reviewerUid: data.reviewerUid ?? null, reviewerRevision: data.reviewerRevision ?? 0,
     ...(typeof data.recordingId === 'string' ? { recordingId: data.recordingId } : {}),
+    ...(typeof data.currentVersionId === 'string' ? { currentVersionId: data.currentVersionId } : {}),
+    ...(typeof data.currentVersionHash === 'string' ? { currentVersionHash: data.currentVersionHash } : {}),
+  };
+}
+function toCloudPatrolVersion(testId: string, data: DocumentData | undefined): CloudPatrolTestVersion | undefined {
+  if (!data || data.framework !== 'patrol' || typeof data.source !== 'string') return undefined;
+  return {
+    testId, title: String(data.title ?? ''), relativePath: String(data.relativePath ?? ''), source: data.source, contentHash: String(data.contentHash ?? ''),
+    ...(typeof data.appVersion === 'string' ? { appVersion: data.appVersion } : {}),
+    ...(data.dependencies && typeof data.dependencies === 'object' ? { dependencies: data.dependencies as Record<string, string> } : {}),
+    ...(typeof data.recordingId === 'string' ? { recordingId: data.recordingId } : {}),
+    ...(data.provider === 'claude-code' || data.provider === 'codex' ? { provider: data.provider } : {}),
   };
 }
 function toCloudSuite(id: string, data: DocumentData): CloudSuite {
@@ -118,7 +130,7 @@ export function createFirebaseBackend(): CloudBackend {
 
     projects: {
       async create(input) { await call('projectCreate', input); },
-      async configure(input) { await call('projectConfigure', input); },
+      async setBaseUrl(input) { await call('projectConfigure', input); },
       async remove(input) { await call('projectDelete', input); },
       async setTestStorage(input) { await call('projectSetTestStorage', input); },
       subscribeTestInstructions: (input, next) => onSnapshot(doc(firestore, `${projectPath(input)}/config/testInstructions`), (snapshot) => {
@@ -168,6 +180,8 @@ export function createFirebaseBackend(): CloudBackend {
       async saveSuite(input) { await call('suiteSave', input); },
       async moveTest(input) { await call('suiteMoveTest', input); },
       async importPortable(input) { await call('testPortableImport', input); },
+      async readPatrolVersion(input) { return toCloudPatrolVersion(input.testId, (await getDoc(doc(firestore, `${projectPath(input)}/tests/${input.testId}/versions/${input.versionId}`))).data()); },
+      savePatrolVersion: (input) => call<{ versionId: string; created: boolean }>('testVersionSave', input),
     },
 
     runs: {

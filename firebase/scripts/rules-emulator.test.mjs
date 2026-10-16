@@ -35,8 +35,13 @@ try {
   await acceptInvitation(adminDb, reviewer, { organizationId: 'org_northstar', invitationId: 'invite_reviewer', tokenHash });
   await assert.rejects(acceptInvitation(adminDb, reviewer, { organizationId: 'org_northstar', invitationId: 'invite_reviewer', tokenHash }), /already used/);
   await createProject(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', name: 'Storefront', targetType: 'web', baseUrl: 'http://127.0.0.1:4173', access: 'restricted' });
+  await configureProject(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', baseUrl: 'http://127.0.0.1:4174' });
+  assert.equal((await adminDb.doc('organizations/org_northstar/projects/project_storefront').get()).data()?.baseUrl, 'http://127.0.0.1:4174/');
+  assert.equal((await adminDb.doc('userScopes/user_tester/organizations/org_northstar/projects/project_storefront').get()).data()?.baseUrl, 'http://127.0.0.1:4174/');
+  // Desktop builds up to v0.10.0 send the URL inside `environment`.
   await configureProject(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', targetType: 'web', environment: { id: 'environment_local', name: 'Local', baseUrl: 'http://127.0.0.1:4173' } });
-  await assert.rejects(configureProject(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', targetType: 'web', environment: { id: 'environment_bad', name: 'Bad', baseUrl: 'ftp://user:secret@example.test' } }), /HTTP\(S\)/);
+  assert.equal((await adminDb.doc('organizations/org_northstar/projects/project_storefront').get()).data()?.baseUrl, 'http://127.0.0.1:4173/');
+  await assert.rejects(configureProject(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', baseUrl: 'ftp://user:secret@example.test' }), /HTTP\(S\)/);
   await setProjectGrant(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', uid: reviewer.uid, access: 'reviewer' });
   await createTestDraft(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', testId: 'test_manual', title: 'Manual checkout' });
   const createdTest = (await adminDb.doc('organizations/org_northstar/projects/project_storefront/tests/test_manual').get()).data();
@@ -95,7 +100,10 @@ try {
   await createOrganization(adminDb, outsider, { organizationId: 'org_rival', name: 'Rival Labs (synthetic)' });
   await createProject(adminDb, outsider, { organizationId: 'org_rival', projectId: 'project_rival', name: 'Rival app', targetType: 'flutter', access: 'all-members' });
   await adminDb.doc('organizations/org_northstar/projects/project_storefront/tests/test_checkout').set({ organizationId: 'org_northstar', projectId: 'project_storefront', title: 'Checkout' });
-  await assert.rejects(configureProject(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_storefront', targetType: 'flutter', environment: { id: 'environment_flutter', name: 'Android', appId: 'dev.sayspec.fixture' } }), /cannot change/);
+  await assert.rejects(configureProject(adminDb, outsider, { organizationId: 'org_rival', projectId: 'project_rival', baseUrl: 'https://example.test' }), /Only Web projects/);
+  // A v0.10.0 Flutter save is accepted and stores nothing.
+  await configureProject(adminDb, outsider, { organizationId: 'org_rival', projectId: 'project_rival', targetType: 'flutter', environment: { id: 'environment_local', name: 'Local acceptance', appId: 'dev.sayspec.fixture', flavor: 'development' } });
+  assert.equal((await adminDb.doc('organizations/org_rival/projects/project_rival/environments/environment_local').get()).exists, false);
 
   const ownerDb = testEnv.authenticatedContext(owner.uid, { email: owner.email }).firestore();
   const reviewerDb = testEnv.authenticatedContext(reviewer.uid, { email: reviewer.email }).firestore();
@@ -187,7 +195,7 @@ try {
   assert.equal((await adminDb.doc('userScopes/user_tester/organizations/org_northstar/projects/project_doomed').get()).exists, false);
   assert.equal((await adminDb.doc('organizations/org_northstar/projects/project_storefront').get()).exists, true);
   await assert.rejects(deleteProject(adminDb, owner, { organizationId: 'org_northstar', projectId: 'project_doomed' }), /does not exist/);
-  console.log(JSON.stringify({ invitationReplay: 'rejected', crossTenantRead: 'rejected', privateScopeIndex: 'enforced', selfPromotion: 'rejected', forgedParent: 'rejected', invalidEnvironment: 'rejected', targetMutationAfterTests: 'rejected', draftConflict: 'explicit', generatedDraft: 'persisted-unpublished', generatedTraversal: 'rejected', portableImport: 'authorized-no-overwrite', localAttempt: 'immutable-client-reported', rename: 'command-only', unsafeSource: 'rejected', immutableVersion: 'enforced', definitionOnly: 'published', fiveThousandPagination: firstPage.size, storageIsolation: 'passed', recordingMissingAsset: 'not-shared', recordingIntegrity: 'shared-after-validation', recordingManifestConflict: 'rejected', recordingRevocation: 'enforced', lastOwner: 'protected', revocation: 'enforced', projectDelete: 'cascaded' }));
+  console.log(JSON.stringify({ invitationReplay: 'rejected', crossTenantRead: 'rejected', privateScopeIndex: 'enforced', selfPromotion: 'rejected', forgedParent: 'rejected', invalidBaseUrl: 'rejected', flutterBaseUrl: 'rejected', legacyFlutterSettings: 'ignored', draftConflict: 'explicit', generatedDraft: 'persisted-unpublished', generatedTraversal: 'rejected', portableImport: 'authorized-no-overwrite', localAttempt: 'immutable-client-reported', rename: 'command-only', unsafeSource: 'rejected', immutableVersion: 'enforced', definitionOnly: 'published', fiveThousandPagination: firstPage.size, storageIsolation: 'passed', recordingMissingAsset: 'not-shared', recordingIntegrity: 'shared-after-validation', recordingManifestConflict: 'rejected', recordingRevocation: 'enforced', lastOwner: 'protected', revocation: 'enforced', projectDelete: 'cascaded' }));
 } finally {
   await testEnv.cleanup();
   await deleteApp(adminApp);

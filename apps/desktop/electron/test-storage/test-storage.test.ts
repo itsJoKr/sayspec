@@ -8,6 +8,7 @@ import type { PlaywrightGenerationDraft } from '@sayspec/contracts';
 import { SavedWebTestStore } from '../execution/saved-web-tests.ts';
 import { PatrolRunStore } from '../flutter/patrol-store.ts';
 import { LocalWorkspaceStore } from '../local-workspace.ts';
+import { CloudUploadQueue } from './cloud-upload-queue.ts';
 import { FolderTestLibrary } from './folder-test-library.ts';
 import { parseTestFile, serializeTestFile } from './test-file-format.ts';
 import { TestStorage } from './test-storage.ts';
@@ -33,8 +34,9 @@ async function fixture() {
   const localWorkspace = new LocalWorkspaceStore(path.join(root, 'workspace.json')); await localWorkspace.initialize();
   const webTests = new SavedWebTestStore(path.join(root, 'web')); await webTests.initialize();
   const patrolTests = new PatrolRunStore(path.join(root, 'patrol')); await patrolTests.initialize();
-  const storage = new TestStorage({ settings, localWorkspace, webTests, patrolTests, localRoot: path.join(root, 'local-tests'), gitIdentity: async () => ({ name: 'Git Person', email: 'git@example.com' }) });
-  return { root, folder, settings, localWorkspace, webTests, patrolTests, storage, scope: { organizationId: 'org_team', projectId: 'project_shop' } };
+  const cloudUploads = new CloudUploadQueue(path.join(root, 'cloud-uploads.json')); await cloudUploads.initialize();
+  const storage = new TestStorage({ settings, localWorkspace, webTests, patrolTests, cloudUploads, localRoot: path.join(root, 'local-tests'), gitIdentity: async () => ({ name: 'Git Person', email: 'git@example.com' }) });
+  return { root, folder, settings, localWorkspace, webTests, patrolTests, cloudUploads, storage, scope: { organizationId: 'org_team', projectId: 'project_shop' } };
 }
 
 test('the header round-trips metadata and leaves the source byte-for-byte intact', () => {
@@ -161,6 +163,57 @@ test('Patrol folder tests sync into the Patrol store and non-Patrol files are fl
     assert.deepEqual(library.tests.map((item) => [item.title, item.relativePath, Boolean(item.issue)]).sort(), [['Receipt total', 'Just Recorded/receipt_total_test.dart', false], ['broken', 'broken_test.dart', true]]);
     assert.equal(patrolTests.listTests(scope.projectId, scope.organizationId).length, 1);
     assert.equal(await new FolderTestLibrary(folder, 'patrol').find(saved.id).then((item) => item?.header.entrypoint), 'patrol_test/receipt_test.dart');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+const patrolSource = (label: string) => `import 'package:patrol/patrol.dart';\nvoid main(){ patrolTest('${label}', ($) async {}); }\n`;
+
+test('SaySpec Cloud Flutter tests saved here wait in the upload queue until the renderer uploads them', async () => {
+  const { root, patrolTests, cloudUploads, storage, scope } = await fixture();
+  try {
+    await storage.configure(scope, { mode: 'cloud', targetType: 'flutter' });
+    const first = await patrolTests.saveTest({ ...scope, title: 'Receipt total', relativePath: 'patrol_test/receipt_test.dart', source: patrolSource('receipt'), appVersion: '2.4.0+57', state: 'published' });
+    await storage.savePatrolTest(first);
+    assert.deepEqual(storage.pendingCloudPatrolTests(scope).map((item) => [item.id, item.versionId, item.appVersion]), [[first.id, first.versionId, '2.4.0+57']]);
+    // A newer version saved during the upload stays pending after the older one is acknowledged.
+    const second = await patrolTests.saveTest({ ...scope, testId: first.id, title: 'Receipt total', relativePath: 'patrol_test/receipt_test.dart', source: patrolSource('receipt v2'), state: 'published' });
+    await storage.savePatrolTest(second);
+    await storage.markCloudPatrolUploaded(scope, first.id, first.versionId);
+    assert.deepEqual(storage.pendingCloudPatrolTests(scope).map((item) => item.versionId), [second.versionId]);
+    await storage.markCloudPatrolUploaded(scope, first.id, second.versionId);
+    assert.deepEqual(storage.pendingCloudPatrolTests(scope), []);
+    // The queue survives a restart.
+    await storage.savePatrolTest(second);
+    const reloaded = new CloudUploadQueue(path.join(root, 'cloud-uploads.json')); await reloaded.initialize();
+    assert.deepEqual(reloaded.pending(scope), [{ ...scope, testId: first.id, versionId: second.versionId }]);
+    assert.equal(cloudUploads.has(scope, first.id), true);
+    // Projects in other storages never queue uploads.
+    await storage.configure(scope, { mode: 'local', targetType: 'flutter' });
+    assert.deepEqual(storage.pendingCloudPatrolTests(scope), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('SaySpec Cloud Flutter tests are pulled into the Patrol store, keeping newer versions still waiting to upload', async () => {
+  const { root, patrolTests, storage, scope } = await fixture();
+  try {
+    await storage.configure(scope, { mode: 'cloud', targetType: 'flutter' });
+    const teammate = { testId: 'patrol_test_teammate', title: 'Teammate checkout', relativePath: 'patrol_test/checkout_test.dart', source: patrolSource('checkout'), contentHash: sha(patrolSource('checkout')), appVersion: '2.4.0+57', dependencies: { patrol: '3.11.0' }, recordingId: 'flutter_capture_teammate', provider: 'codex' as const };
+    await storage.pullCloudPatrolTests(scope, [teammate]);
+    const pulled = patrolTests.listTests(scope.projectId, scope.organizationId);
+    assert.deepEqual(pulled.map((item) => [item.id, item.title, item.contentHash, item.appVersion, item.recordingCaptureId, item.state]), [['patrol_test_teammate', 'Teammate checkout', teammate.contentHash, '2.4.0+57', 'flutter_capture_teammate', 'published']]);
+    assert.deepEqual(storage.pendingCloudPatrolTests(scope), [], 'pulled tests are not uploaded back');
+    // Pulling the same version again keeps one local version.
+    await storage.pullCloudPatrolTests(scope, [teammate]);
+    assert.equal(patrolTests.versions(scope.projectId, scope.organizationId, teammate.testId).length, 1);
+    // A version made on this Mac and not uploaded yet is not replaced by the cloud's older one.
+    const mine = await patrolTests.saveTest({ ...scope, testId: teammate.testId, title: 'Teammate checkout', relativePath: teammate.relativePath, source: patrolSource('checkout, edited here'), state: 'published' });
+    await storage.savePatrolTest(mine);
+    await storage.pullCloudPatrolTests(scope, [teammate]);
+    assert.equal(patrolTests.versions(scope.projectId, scope.organizationId, teammate.testId)[0].contentHash, mine.contentHash);
+    // Source that does not match its hash is refused.
+    await assert.rejects(storage.pullCloudPatrolTests(scope, [{ ...teammate, testId: 'patrol_test_corrupt', contentHash: 'f'.repeat(64) }]), /Teammate checkout.*hash/);
+    await storage.configure(scope, { mode: 'local', targetType: 'flutter' });
+    await assert.rejects(storage.pullCloudPatrolTests(scope, [teammate]), /SaySpec Cloud/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

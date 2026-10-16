@@ -324,6 +324,66 @@ export async function renameTest(db: Firestore, actor: Actor, input: { organizat
   });
 }
 
+const PATROL_TEST_PATH = /^patrol_test\/[A-Za-z0-9_./-]+\.dart$/;
+
+function normalizedPatrolVersion(input: Record<string, unknown>) {
+  const title = typeof input.title === 'string' ? input.title.trim() : '';
+  if (!title || title.length > 160) throw new CommandError('invalid-argument', 'Test title is invalid.');
+  const relativePath = String(input.relativePath ?? '');
+  if (!PATROL_TEST_PATH.test(relativePath) || relativePath.includes('..')) throw new CommandError('invalid-argument', 'A Patrol test must live under patrol_test/ with a .dart extension.');
+  const source = typeof input.source === 'string' ? input.source : '';
+  if (!source || Buffer.byteLength(source) > 512 * 1024 || !source.includes('package:patrol/patrol.dart') || !/patrolTest\s*\(/.test(source)) throw new CommandError('invalid-argument', 'The source is not a Patrol test of at most 512 KiB.');
+  const contentHash = createHash('sha256').update(source).digest('hex');
+  if (input.contentHash !== contentHash) throw new CommandError('invalid-argument', 'Source hash does not match content.');
+  // The app version the test was recorded against, from the app's pubspec.yaml.
+  if (input.appVersion !== undefined && (typeof input.appVersion !== 'string' || !/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(input.appVersion))) throw new CommandError('invalid-argument', 'App version is invalid.');
+  const dependencies = input.dependencies as Record<string, unknown> | undefined;
+  if (dependencies !== undefined && (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies) || Object.keys(dependencies).length > 32 || Object.entries(dependencies).some(([name, version]) => !/^[a-z0-9_]{1,64}$/.test(name) || typeof version !== 'string' || !version || version.length > 64))) throw new CommandError('invalid-argument', 'Dependency versions are invalid.');
+  if (input.recordingId !== undefined) validId(input.recordingId as string, 'recordingId');
+  if (input.provider !== undefined && !['claude-code', 'codex'].includes(String(input.provider))) throw new CommandError('invalid-argument', 'Coding agent is invalid.');
+  return {
+    title, relativePath, source, contentHash,
+    ...(input.appVersion !== undefined ? { appVersion: input.appVersion as string } : {}),
+    ...(dependencies !== undefined ? { dependencies: dependencies as Record<string, string> } : {}),
+    ...(input.recordingId !== undefined ? { recordingId: input.recordingId as string } : {}),
+    ...(input.provider !== undefined ? { provider: input.provider as string } : {}),
+  };
+}
+
+/**
+ * Saves a Flutter test's source as a new immutable version in SaySpec Cloud,
+ * creating the test when it does not exist yet. Nothing runs in the cloud:
+ * each Mac pulls the current version and runs it locally. Saving the current
+ * source again is a no-op; saving a deleted test brings it back.
+ */
+export async function savePatrolTestVersion(db: Firestore, actor: Actor, input: { organizationId: string; projectId: string; testId: string; title: string; relativePath: string; source: string; contentHash: string; appVersion?: string; dependencies?: Record<string, string>; recordingId?: string; provider?: string }) {
+  validId(input.testId, 'testId');
+  const version = normalizedPatrolVersion(input as unknown as Record<string, unknown>);
+  return db.runTransaction(async (tx) => {
+    const project = await requireProjectAuthor(tx, db, input.organizationId, input.projectId, actor);
+    if (project.data()?.targetType !== 'flutter') throw new CommandError('failed-precondition', 'Patrol tests belong to Flutter projects.');
+    // The project may still use another storage: switching to SaySpec Cloud copies its tests here first.
+    requireAllowedTestStorage('cloud', (await tx.get(orgRef(db, input.organizationId))).data());
+    const test = testRef(db, input.organizationId, input.projectId, input.testId); const snapshot = await tx.get(test); const current = snapshot.data();
+    if (snapshot.exists && current?.framework !== 'patrol') throw new CommandError('failed-precondition', 'This test is not a Patrol test.');
+    const restore = current?.status === 'archived' ? { archivedAt: FieldValue.delete(), archivedByUid: FieldValue.delete() } : {};
+    if (snapshot.exists && current?.currentVersionHash === version.contentHash) {
+      if (current?.status === 'archived') tx.update(test, { status: 'published', ...restore, updatedAt: FieldValue.serverTimestamp() });
+      return { testId: input.testId, versionId: String(current.currentVersionId), version: Number(current.versionCount), contentHash: version.contentHash, created: false };
+    }
+    const versionNumber = Number(current?.versionCount ?? 0) + 1;
+    const versionId = `version_${versionNumber}`;
+    tx.create(test.collection('versions').doc(versionId), { id: versionId, organizationId: input.organizationId, projectId: input.projectId, testId: input.testId, version: versionNumber, framework: 'patrol', ...version, publishedByUid: actor.uid, publishedAt: FieldValue.serverTimestamp() });
+    const head = { status: 'published', currentVersionId: versionId, currentVersionHash: version.contentHash, versionCount: versionNumber, updatedAt: FieldValue.serverTimestamp() };
+    if (!snapshot.exists) {
+      const authorLabel = (actor.displayName?.trim() || actor.email?.trim() || actor.uid).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 120);
+      tx.create(test, { id: input.testId, organizationId: input.organizationId, projectId: input.projectId, framework: 'patrol', title: version.title, normalizedTitle: version.title.toLowerCase(), folder: 'Generated tests', tags: ['flutter', 'patrol'], ownerUid: actor.uid, authorLabel, ...(version.recordingId ? { recordingId: version.recordingId } : {}), createdAt: FieldValue.serverTimestamp(), ...head });
+    } else tx.update(test, { ...head, ...restore });
+    tx.create(projectRef(db, input.organizationId, input.projectId).collection('activity').doc(), { kind: 'test-version-saved', testId: input.testId, versionId, actorUid: actor.uid, at: FieldValue.serverTimestamp() });
+    return { testId: input.testId, versionId, version: versionNumber, contentHash: version.contentHash, created: !snapshot.exists };
+  });
+}
+
 export async function beginRecordingShare(db: Firestore, actor: Actor, input: { manifest: unknown; manifestHash: string }) {
   const manifest = input.manifest as ShareableRecordingManifest;
   if (!manifest || typeof manifest !== 'object' || manifest.schemaVersion !== '1.0.0' || manifest.kind !== 'recording' || !Array.isArray(manifest.artifacts)) throw new CommandError('invalid-argument', 'Recording manifest is invalid.');
@@ -764,10 +824,9 @@ export async function acceptInvitation(db: Firestore, actor: Actor, input: { org
 export type TestStorage = 'local' | 'cloud' | 'folder';
 const TEST_STORAGES: readonly TestStorage[] = ['local', 'cloud', 'folder'];
 
-/** SaySpec Cloud storage is a Pro feature (the Beta plan) and holds Web tests only; Flutter tests are not stored in the cloud yet. */
-function requireAllowedTestStorage(storage: TestStorage, organization: DocumentData | undefined, targetType: unknown) {
+/** SaySpec Cloud storage is a Pro feature (the Beta plan). */
+function requireAllowedTestStorage(storage: TestStorage, organization: DocumentData | undefined) {
   if (storage !== 'cloud') return;
-  if (targetType !== 'web') throw new CommandError('failed-precondition', 'SaySpec Cloud storage is available for Web projects only.');
   if (!isProPlan(planKind(organization))) throw new CommandError('failed-precondition', 'SaySpec Cloud storage requires the Pro plan.', { reason: 'plan-required' });
 }
 
@@ -781,8 +840,8 @@ export async function createProject(db: Firestore, actor: Actor, input: { organi
     await requireManager(tx, db, input.organizationId, actor);
     const organization = (await tx.get(orgRef(db, input.organizationId))).data();
     // Clients that predate the choice get the best storage the plan allows.
-    const testStorage: TestStorage = input.testStorage ?? (input.targetType === 'web' && isProPlan(planKind(organization)) ? 'cloud' : 'local');
-    requireAllowedTestStorage(testStorage, organization, input.targetType);
+    const testStorage: TestStorage = input.testStorage ?? (isProPlan(planKind(organization)) ? 'cloud' : 'local');
+    requireAllowedTestStorage(testStorage, organization);
     const project = projectRef(db, input.organizationId, input.projectId);
     if ((await tx.get(project)).exists) throw new CommandError('already-exists', 'Project already exists.');
     const members = input.access === 'all-members'
@@ -810,7 +869,7 @@ export async function setProjectTestStorage(db: Firestore, actor: Actor, input: 
     const project = projectRef(db, input.organizationId, input.projectId);
     const snapshot = await tx.get(project);
     if (!snapshot.exists) throw new CommandError('not-found', 'Project does not exist.');
-    requireAllowedTestStorage(input.testStorage, organization, snapshot.data()?.targetType);
+    requireAllowedTestStorage(input.testStorage, organization);
     const members = await tx.get(orgRef(db, input.organizationId).collection('members'));
     const scopes = await Promise.all(members.docs.map((member) => tx.get(projectScopeRef(db, member.id, input.organizationId, input.projectId))));
     tx.update(project, { testStorage: input.testStorage, testStorageChangedAt: FieldValue.serverTimestamp(), testStorageChangedByUid: actor.uid });
@@ -866,42 +925,31 @@ export async function setProjectGrant(db: Firestore, actor: Actor, input: { orga
   });
 }
 
+/**
+ * Sets a Web project's base URL, the default start URL for recording and runs.
+ * Desktop builds up to v0.10.0 send `{ targetType, environment }` instead, and
+ * for Flutter an app ID and flavor that entry points replaced: those saves are
+ * accepted and change nothing.
+ */
 export async function configureProject(db: Firestore, actor: Actor, input: {
-  organizationId: string; projectId: string; targetType: 'web' | 'flutter';
-  environment: { id: string; name: string; baseUrl?: string; appId?: string; flavor?: string };
+  organizationId: string; projectId: string; baseUrl?: string;
+  targetType?: 'web' | 'flutter'; environment?: { baseUrl?: string };
 }) {
-  validId(input.environment.id, 'environment.id');
-  if (!input.environment.name?.trim() || input.environment.name.length > 80) throw new CommandError('invalid-argument', 'Environment name is invalid.');
-  if (input.targetType === 'web') {
-    normalizedBaseUrl(input.environment.baseUrl);
-  } else if (!/^[a-zA-Z][a-zA-Z0-9_.-]{2,199}$/.test(input.environment.appId ?? '')) {
-    throw new CommandError('invalid-argument', 'Flutter projects require a valid application identifier.');
-  }
+  const baseUrl = input.targetType === 'flutter' ? undefined : normalizedBaseUrl(input.baseUrl ?? input.environment?.baseUrl);
   return db.runTransaction(async (tx) => {
     await requireManager(tx, db, input.organizationId, actor);
     const project = projectRef(db, input.organizationId, input.projectId);
     const snapshot = await tx.get(project);
     if (!snapshot.exists) throw new CommandError('not-found', 'Project does not exist.');
-    const tests = await tx.get(project.collection('tests').limit(1));
+    if (!baseUrl) return { projectId: input.projectId };
+    if (snapshot.data()?.targetType !== 'web') throw new CommandError('failed-precondition', 'Only Web projects have a base URL.');
     const members = await tx.get(orgRef(db, input.organizationId).collection('members').where('status', '==', 'active'));
     const grants = await tx.get(project.collection('grants'));
-    if (!tests.empty && snapshot.data()?.targetType !== input.targetType) throw new CommandError('failed-precondition', 'Target type cannot change after tests exist.');
-    const environment = project.collection('environments').doc(input.environment.id);
-    const baseUrl = input.targetType === 'web' ? normalizedBaseUrl(input.environment.baseUrl) : undefined;
-    const data = {
-      id: input.environment.id, organizationId: input.organizationId, projectId: input.projectId,
-      name: input.environment.name.trim(), targetType: input.targetType,
-      ...(input.targetType === 'web'
-        ? { baseUrl }
-        : { appId: input.environment.appId, flavor: input.environment.flavor?.trim() || null }),
-      updatedByUid: actor.uid, updatedAt: FieldValue.serverTimestamp(),
-    };
-    tx.update(project, { targetType: input.targetType, ...(baseUrl ? { baseUrl } : { baseUrl: FieldValue.delete() }), configuredAt: FieldValue.serverTimestamp(), configuredByUid: actor.uid });
-    tx.set(environment, data, { merge: true });
+    tx.update(project, { baseUrl, configuredAt: FieldValue.serverTimestamp(), configuredByUid: actor.uid });
     const granted = new Set(grants.docs.map((grant) => grant.id));
     members.docs.filter((member) => snapshot.data()?.access === 'all-members' || ['owner', 'admin'].includes(member.data().role) || granted.has(member.id))
-      .forEach((member) => tx.set(projectScopeRef(db, member.id, input.organizationId, input.projectId), { targetType: input.targetType, ...(baseUrl ? { baseUrl } : { baseUrl: FieldValue.delete() }), updatedAt: FieldValue.serverTimestamp() }, { merge: true }));
-    return { projectId: input.projectId, environmentId: input.environment.id };
+      .forEach((member) => tx.set(projectScopeRef(db, member.id, input.organizationId, input.projectId), { baseUrl, updatedAt: FieldValue.serverTimestamp() }, { merge: true }));
+    return { projectId: input.projectId };
   });
 }
 

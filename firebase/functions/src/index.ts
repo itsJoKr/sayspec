@@ -6,7 +6,7 @@ import { defineBoolean, defineInt, defineString } from 'firebase-functions/param
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { getStorage } from 'firebase-admin/storage';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
-import { acceptInvitation, archiveTest, setProjectTestStorage, setProjectTestInstructions, assignTestReviewer, authorizeApplicationFixApply, authorizeApplicationFixRead, authorizeLocalRun, authorizeManagedFixApply, authorizeManagedFixRead, beginFlutterSliceShare, beginRecordingShare, changeMemberRole, commentOnTest, CommandError, configureProject, createInvitation, createOrganization, createProject, createTestDraft, decideApplicationFix, decideManagedFix, deleteProject, finalizeFlutterSliceShare, finalizeRecordingShare, importPortableTest, moveTestToSuite, publishTestDraft, readFlutterSliceShare, recordApplicationFixApplied, recordLocalRun, recordLocalTestAttempt, recordManagedFixApplied, renameTest, saveSuite, saveTestDraft, setProjectGrant, type Actor } from './commands.js';
+import { acceptInvitation, archiveTest, setProjectTestStorage, setProjectTestInstructions, assignTestReviewer, authorizeApplicationFixApply, authorizeApplicationFixRead, authorizeLocalRun, authorizeManagedFixApply, authorizeManagedFixRead, beginFlutterSliceShare, beginRecordingShare, changeMemberRole, commentOnTest, CommandError, configureProject, createInvitation, createOrganization, createProject, createTestDraft, decideApplicationFix, decideManagedFix, deleteProject, finalizeFlutterSliceShare, finalizeRecordingShare, importPortableTest, moveTestToSuite, publishTestDraft, readFlutterSliceShare, recordApplicationFixApplied, recordLocalRun, recordLocalTestAttempt, recordManagedFixApplied, renameTest, savePatrolTestVersion, saveSuite, saveTestDraft, setProjectGrant, type Actor } from './commands.js';
 
 import { DEFAULT_FREE_BETA_SEAT_LIMIT, recordRedeemOutcome, redeemJoinCode, reserveRedeemAttempt, rotateJoinCode, setDefaultPlanSource, setJoinCodeEnabled, setSeatLimitSource, syncMemberDirectory } from './membership.js';
 import { emulatorTranscriber, transcribeNarration, vertexGeminiTranscriber } from './transcription.js';
@@ -111,6 +111,7 @@ export const applicationFixAppliedRecord = onCall((request) => invoke(() => reco
 export const managedFixAppliedRecord = onCall((request) => invoke(() => recordManagedFixApplied(db, actor(request), request.data)));
 export const testArchive = onCall((request) => invoke(() => archiveTest(db, actor(request), request.data)));
 export const testRename = onCall((request) => invoke(() => renameTest(db, actor(request), request.data)));
+export const testVersionSave = onCall((request) => invoke(() => savePatrolTestVersion(db, actor(request), request.data)));
 export const suiteSave = onCall((request) => invoke(() => saveSuite(db, actor(request), request.data)));
 export const suiteMoveTest = onCall((request) => invoke(() => moveTestToSuite(db, actor(request), request.data)));
 export const testComment = onCall((request) => invoke(() => commentOnTest(db, actor(request), request.data)));

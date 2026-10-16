@@ -1,15 +1,17 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { LibraryTest, PatrolSavedTest, PlaywrightGenerationDraft, PortableLibrary, PortableLibraryTest, SavedWebTestVersion, SuiteChange, TestLibraryScope, TestLibrarySnapshot, TestStorageCopyResult, TestStorageMode, TestStorageSettings, TestSuite } from '@sayspec/contracts';
+import type { CloudPatrolTestVersion, LibraryTest, PatrolSavedTest, PlaywrightGenerationDraft, PortableLibrary, PortableLibraryTest, SavedWebTestVersion, SuiteChange, TestLibraryScope, TestLibrarySnapshot, TestStorageCopyResult, TestStorageMode, TestStorageSettings, TestSuite } from '@sayspec/contracts';
 import type { LocalWorkspaceStore } from '../local-workspace.ts';
 import type { SavedWebTestStore } from '../execution/saved-web-tests.ts';
 import type { PatrolRunStore } from '../flutter/patrol-store.ts';
+import type { CloudUploadQueue } from './cloud-upload-queue.ts';
 import { FolderTestLibrary, JUST_RECORDED, type FolderTest } from './folder-test-library.ts';
+import { isTestFile } from './test-file-format.ts';
 import type { TestStorageSettingsStore } from './test-storage-settings.ts';
-import { carryInstructions, type InstructionsLocation } from './test-instructions.ts';
+import { INSTRUCTIONS_FILE, carryInstructions, type InstructionsLocation } from './test-instructions.ts';
 
 type Identity = { name?: string; email?: string };
 type TargetType = 'web' | 'flutter';
@@ -36,25 +38,33 @@ const MISSING_FOLDER = 'This project keeps its tests in a folder. Choose where t
  * runs, fixes and coding agents read, so every feature works the same in every
  * storage. Anything SaySpec saves (a generated test, an applied fix, an
  * import) is written back to the files.
+ *
+ * SaySpec Cloud works the same way for Flutter tests, with the renderer as the
+ * go-between: a test saved here is queued until the renderer uploads it, and
+ * the renderer pulls the cloud's current versions into the local store.
  */
 export class TestStorage {
   readonly #settings: TestStorageSettingsStore;
   readonly #localWorkspace: LocalWorkspaceStore;
   readonly #webTests: SavedWebTestStore;
   readonly #patrolTests: PatrolRunStore;
+  readonly #cloudUploads: CloudUploadQueue;
   readonly #localRoot: string;
   readonly #gitIdentity: (directory: string) => Promise<Identity>;
   #identity: Identity | null = null;
 
   /** `localRoot` is where SaySpec keeps Local storage for signed-in projects. */
-  constructor(input: { settings: TestStorageSettingsStore; localWorkspace: LocalWorkspaceStore; webTests: SavedWebTestStore; patrolTests: PatrolRunStore; localRoot: string; gitIdentity?: (directory: string) => Promise<Identity> }) {
-    this.#settings = input.settings; this.#localWorkspace = input.localWorkspace; this.#webTests = input.webTests; this.#patrolTests = input.patrolTests;
+  constructor(input: { settings: TestStorageSettingsStore; localWorkspace: LocalWorkspaceStore; webTests: SavedWebTestStore; patrolTests: PatrolRunStore; cloudUploads: CloudUploadQueue; localRoot: string; gitIdentity?: (directory: string) => Promise<Identity> }) {
+    this.#settings = input.settings; this.#localWorkspace = input.localWorkspace; this.#webTests = input.webTests; this.#patrolTests = input.patrolTests; this.#cloudUploads = input.cloudUploads;
     this.#localRoot = path.resolve(input.localRoot);
     this.#gitIdentity = input.gitIdentity ?? readGitIdentity;
   }
 
   /** The signed-in person, written as the author of tests saved to files. */
   setIdentity(value: Identity | null) { this.#identity = value && (value.name?.trim() || value.email?.trim()) ? { name: value.name?.trim() || undefined, email: value.email?.trim() || undefined } : null; }
+
+  /** The signed-in person, if any: Git falls back to it when a repository has no author configured. */
+  author(): Identity | null { return this.#identity ? { ...this.#identity } : null; }
 
   /** Guest projects start on Local and signed-in projects on SaySpec Cloud until told otherwise. */
   mode(scope: TestLibraryScope): TestStorageMode { return this.#settings.get(scope.projectId)?.mode ?? (scope.organizationId === 'local' ? 'local' : 'cloud'); }
@@ -174,6 +184,76 @@ export class TestStorage {
     if (backend.kind === 'missing-folder') throw new Error(MISSING_FOLDER);
     if (backend.kind === 'files') await backend.library.write({ id: test.id, title: test.title, source: test.source, author: await this.#author(backend.library.root), recordingId: test.recordingCaptureId, entrypoint: test.relativePath, suite: JUST_RECORDED });
     else if (backend.kind === 'guest') await this.#localWorkspace.saveGeneratedTest({ projectId: test.projectId, recordingId: test.recordingCaptureId!, title: test.title, folder: 'Generated tests', tags: ['flutter', 'patrol'], status: 'generated', versionCount: test.version, testId: test.id });
+    else await this.#cloudUploads.add({ organizationId: test.organizationId, projectId: test.projectId, testId: test.id, versionId: test.versionId });
+  }
+
+  /**
+   * Records a new version of an existing Patrol test (an applied fix): file
+   * storage gets the new source in the test's current file, and SaySpec Cloud
+   * gets it on the next upload. A guest project reads versions from this Mac's store.
+   */
+  async savePatrolVersion(test: PatrolSavedTest) {
+    const backend = this.#backend(test);
+    if (backend.kind === 'missing-folder') throw new Error(MISSING_FOLDER);
+    if (backend.kind === 'files') await backend.library.write({ id: test.id, title: test.title, source: test.source, author: await this.#author(backend.library.root), recordingId: test.recordingCaptureId, entrypoint: test.relativePath, suite: null });
+    else if (backend.kind === 'cloud') await this.#cloudUploads.add({ organizationId: test.organizationId, projectId: test.projectId, testId: test.id, versionId: test.versionId });
+  }
+
+  /** Flutter tests saved on this Mac that SaySpec Cloud does not hold yet, each at its latest version. */
+  pendingCloudPatrolTests(scope: TestLibraryScope): PatrolSavedTest[] {
+    if (!this.isCloud(scope)) return [];
+    return this.#cloudUploads.pending(scope).flatMap((entry) => this.#patrolTests.versions(scope.projectId, scope.organizationId, entry.testId).slice(0, 1));
+  }
+
+  /** SaySpec Cloud now holds `versionId`, so the test is no longer pending unless a newer version was saved meanwhile. */
+  async markCloudPatrolUploaded(scope: TestLibraryScope, testId: string, versionId: string) {
+    const entry = this.#cloudUploads.pending(scope).find((item) => item.testId === testId);
+    if (!entry) return;
+    const versions = this.#patrolTests.versions(scope.projectId, scope.organizationId, testId);
+    const uploaded = versions.find((item) => item.versionId === versionId);
+    const queued = versions.find((item) => item.versionId === entry.versionId);
+    if (uploaded && (!queued || queued.version <= uploaded.version)) await this.#cloudUploads.remove(scope, testId, entry.versionId);
+  }
+
+  /**
+   * Saves SaySpec Cloud's current Flutter test versions in the local store,
+   * which is what runs read. A test with an upload still pending keeps this
+   * Mac's newer version until the upload succeeds.
+   */
+  async pullCloudPatrolTests(scope: TestLibraryScope, versions: readonly CloudPatrolTestVersion[]) {
+    if (!this.isCloud(scope)) throw new Error('This project does not keep its tests in SaySpec Cloud.');
+    const failed: string[] = [];
+    for (const version of versions) {
+      if (this.#cloudUploads.has(scope, version.testId)) continue;
+      try {
+        if (createHash('sha256').update(version.source).digest('hex') !== version.contentHash) throw new Error('its source does not match its hash');
+        await this.#patrolTests.saveTest({
+          ...scope, testId: version.testId, title: version.title, relativePath: version.relativePath, source: version.source, state: 'published',
+          ...(version.recordingId ? { recordingCaptureId: version.recordingId } : {}), ...(version.dependencies ? { dependencies: version.dependencies } : {}),
+          ...(version.appVersion ? { appVersion: version.appVersion } : {}), ...(version.provider ? { provider: version.provider } : {}),
+        });
+      } catch (error) { failed.push(`“${version.title}”: ${error instanceof Error ? error.message : 'it could not be saved'}`); }
+    }
+    if (failed.length) throw new Error(`Some tests could not be copied from SaySpec Cloud. ${failed.join('; ')}`);
+  }
+
+  /**
+   * Where a file-backed project's tests are, for committing them to Git: the
+   * files of `testIds` (relative to the folder) with their titles, or, without
+   * IDs, a filter for the files SaySpec keeps there. Undefined when the tests
+   * are not files on this machine.
+   */
+  async gitLocation(scope: TestLibraryScope, testIds?: readonly string[]): Promise<{ directory: string; paths?: string[]; titles: string[]; include?: (relativePath: string) => boolean } | undefined> {
+    const backend = this.#backend(scope);
+    if (backend.kind !== 'files' || !await backend.library.available()) return undefined;
+    const { library } = backend;
+    if (!testIds?.length) {
+      // The folder may be a whole repository; only test files, their support files, suite markers and SAYSPEC.md are SaySpec's.
+      const include = (relativePath: string) => isTestFile(path.posix.basename(relativePath), library.framework) || relativePath.startsWith('.sayspec/') || path.posix.basename(relativePath) === '.gitkeep' || relativePath === INSTRUCTIONS_FILE;
+      return { directory: library.root, titles: [], include };
+    }
+    const found = (await library.scan()).tests.filter((test) => testIds.includes(test.id));
+    return { directory: library.root, paths: found.flatMap((test) => [test.relativePath, `.sayspec/files/${test.id}`]), titles: found.map((test) => test.title) };
   }
 
   /** Writes a new Web version (an applied fix) back to file-backed storage; other storage already holds it. */
@@ -245,7 +325,7 @@ export class TestStorage {
           const entry = test.web.files.find((file) => file.relativePath === test.web!.runtime.entrypoint);
           if (!entry) throw new Error('It has no entry file.');
           await this.#webTests.saveFolderVersion({ ...scope, testId: test.id, title: test.title, recordingId: test.recordingId, entrypoint: test.web.runtime.entrypoint, files: test.web.files, steps: test.web.steps, runtime: test.web.runtime, provenance: test.web.provenance });
-        } else await this.#patrolTests.saveTest({ ...scope, testId: test.id, title: test.title, relativePath: test.patrol!.relativePath, source: test.patrol!.source, ...(test.patrol!.recordingCaptureId ? { recordingCaptureId: test.patrol!.recordingCaptureId } : {}), ...(test.patrol!.dependencies ? { dependencies: test.patrol!.dependencies } : {}), ...(test.patrol!.provider ? { provider: test.patrol!.provider } : {}) });
+        } else await this.#patrolTests.saveTest({ ...scope, testId: test.id, title: test.title, relativePath: test.patrol!.relativePath, source: test.patrol!.source, ...(test.patrol!.recordingCaptureId ? { recordingCaptureId: test.patrol!.recordingCaptureId } : {}), ...(test.patrol!.dependencies ? { dependencies: test.patrol!.dependencies } : {}), ...(test.patrol!.provider ? { provider: test.patrol!.provider } : {}), ...(test.patrol!.appVersion ? { appVersion: test.patrol!.appVersion } : {}) });
         await this.#localWorkspace.saveGeneratedTest({ testId: test.id, projectId: scope.projectId, title: test.title, folder: 'Copied tests', tags: [], status: 'generated', versionCount: 1, ...(test.recordingId ? { recordingId: test.recordingId } : {}) });
         copied.push(test); result.copied += 1;
       } catch (error) { result.failed.push({ title: test.title, reason: error instanceof Error ? error.message : 'It could not be copied.' }); }
@@ -267,7 +347,7 @@ export class TestStorage {
     return {
       ...test,
       ...(web ? { web: { title: web.title, steps: web.steps, files: web.files, runtime: web.runtime, provenance: web.provenance, ...(web.recordingId ? { recordingId: web.recordingId } : {}) } } : {}),
-      ...(patrol ? { patrol: { title: patrol.title, relativePath: patrol.relativePath, source: patrol.source, ...(patrol.recordingCaptureId ? { recordingCaptureId: patrol.recordingCaptureId } : {}), ...(patrol.dependencies ? { dependencies: patrol.dependencies } : {}), ...(patrol.provider ? { provider: patrol.provider } : {}) } } : {}),
+      ...(patrol ? { patrol: { title: patrol.title, relativePath: patrol.relativePath, source: patrol.source, ...(patrol.recordingCaptureId ? { recordingCaptureId: patrol.recordingCaptureId } : {}), ...(patrol.dependencies ? { dependencies: patrol.dependencies } : {}), ...(patrol.provider ? { provider: patrol.provider } : {}), ...(patrol.appVersion ? { appVersion: patrol.appVersion } : {}) } } : {}),
     };
   }
 
