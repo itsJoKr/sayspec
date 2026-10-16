@@ -1,4 +1,4 @@
-import type { PlanKind, PlaywrightGenerationDraft, PortableWebTestBundle, PortableWebSource, RecordingManifest, SavedWebTestAttempt, TestStorageMode, TestSuite } from '@sayspec/contracts';
+import type { CloudPatrolTestVersion, PlanKind, PlaywrightGenerationDraft, PortableWebTestBundle, PortableWebSource, RecordingManifest, SavedWebTestAttempt, TestStorageMode, TestSuite } from '@sayspec/contracts';
 import type { JoinFailure } from '../join-code';
 
 /**
@@ -73,11 +73,10 @@ export interface CloudWorkspaces {
   describeJoinError(error: unknown): JoinFailure;
 }
 
-export type ProjectEnvironment = { id: string; name: string; baseUrl?: string; appId?: string; flavor?: string };
-
 export interface CloudProjects {
   create(input: ProjectRef & { name: string; targetType: 'web' | 'flutter'; baseUrl?: string; access: 'restricted' | 'all-members'; testStorage: TestStorageMode }): Promise<void>;
-  configure(input: ProjectRef & { targetType: 'web' | 'flutter'; environment: ProjectEnvironment }): Promise<void>;
+  /** Changes a Web project's base URL for the whole team. */
+  setBaseUrl(input: ProjectRef & { baseUrl: string }): Promise<void>;
   /** Deletes the project for everyone, with its tests, versions, runs and shared recordings. */
   remove(input: ProjectRef): Promise<void>;
   /** Records the project's storage choice for the whole team. */
@@ -91,6 +90,8 @@ export interface CloudProjects {
 export type CloudTest = {
   id: string; title: string; createdAt: string; authorLabel?: string; recordingId?: string;
   ownerUid?: string; reviewerUid?: string | null; reviewerRevision?: number;
+  /** A Flutter test's current version, which every Mac pulls and runs locally. */
+  currentVersionId?: string; currentVersionHash?: string;
 };
 export type CloudSuite = { id: string; name: string; revision: number; testIds: string[]; sourceRecordingId?: string };
 /** Where the next page starts. Opaque to callers. */
@@ -117,6 +118,10 @@ export interface CloudTests {
   moveTest(input: ProjectRef & { testId: string; targetSuiteId: string | null }): Promise<void>;
   /** Stores an imported portable bundle as a new test. */
   importPortable(input: ProjectRef & { testId: string; bundle: PortableWebTestBundle }): Promise<void>;
+  /** A Flutter test's stored version, or undefined when it does not exist. */
+  readPatrolVersion(input: ProjectRef & { testId: string; versionId: string }): Promise<CloudPatrolTestVersion | undefined>;
+  /** Saves a Flutter test's source as its new current version (creating the test); the current source again is a no-op. */
+  savePatrolVersion(input: ProjectRef & CloudPatrolTestVersion): Promise<{ versionId: string; created: boolean }>;
 }
 
 export type CloudRunSnapshot = { schemaVersion: 1; id: string; organizationId: string; projectId: string; name: string; environmentHash: string; items: Array<{ testId: string; versionId: string; contentHash: string; title: string }> };

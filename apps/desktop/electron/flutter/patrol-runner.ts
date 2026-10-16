@@ -4,7 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { ApplicationPatchLink, FlutterDeviceSummary, PatrolAttempt, PatrolRun, PatrolRunInput, PatrolRuntimeManifest, PatrolSavedTest, PatrolTestOutcome } from '@sayspec/contracts';
+import type { ApplicationPatchLink, FlutterDeviceSummary, PatrolAttempt, PatrolRun, PatrolRunConsoleEvent, PatrolRunInput, PatrolRuntimeManifest, PatrolSavedTest, PatrolTestOutcome } from '@sayspec/contracts';
 import { resolveTool, runFile } from '../setup/environment.ts';
 import { environmentHash, PatrolRunStore } from './patrol-store.ts';
 import { FlutterCaptureSessionManager } from './session-manager.ts';
@@ -14,8 +14,10 @@ import { deviceReportFiles, instrumentationFailure, ownerOf, readableLog, splitP
 import { resolveProjectFlutterToolchain } from './toolchain.ts';
 
 type RunControl = { stop: boolean; activeKey?: string };
-/** Run lifecycle hooks; a run that failed on the device starts its analysis. */
-export type RunEvents = { onRunStarted?: (runId: string) => void; onRunFailed?: (run: PatrolRun, sourcePath: string) => void };
+/** Run lifecycle hooks; a run that failed on the device starts its analysis. `onConsole` streams the run's console. */
+export type RunEvents = { onRunStarted?: (runId: string) => void; onRunFailed?: (run: PatrolRun, sourcePath: string) => void; onConsole?: (event: PatrolRunConsoleEvent) => void };
+/** Readable output of a run's latest start; `pending` is sent with the next batch. */
+type RunConsole = { startedAt: string; seq: number; text: string; pending: string; timer?: ReturnType<typeof setTimeout> };
 type ActiveProcess = { child?: ChildProcessWithoutNullStreams; leaseId: string; canceled: boolean; log: string[] };
 type Preflight = {
   device: FlutterDeviceSummary;
@@ -27,6 +29,9 @@ type Preflight = {
 const BUILD_TIMEOUT_MS = 10 * 60_000;
 const RUN_TIMEOUT_MS = 15 * 60_000;
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
+const MAX_CONSOLE_CHARS = 1024 * 1024;
+const MAX_CONSOLES = 20;
+const CONSOLE_BATCH_MS = 150;
 
 interface ReporterEvent { type?: string; test?: { id?: number; name?: string; url?: string }; result?: string; time?: number; error?: string; message?: string; suite?: { id?: number }; }
 
@@ -45,6 +50,8 @@ export class PatrolRunner {
   readonly #active = new Map<string, ActiveProcess>();
   /** Test runs executing in this process. */
   readonly #runs = new Map<string, RunControl>();
+  /** Consoles of the runs started in this process, oldest first. */
+  readonly #consoles = new Map<string, RunConsole>();
   readonly #events: RunEvents;
 
   constructor(options: { store: PatrolRunStore; captures: FlutterCaptureSessionManager; events?: RunEvents }) {
@@ -108,6 +115,52 @@ export class PatrolRunner {
 
   log(attemptId: string) { return this.#active.get(attemptId)?.log.join('') ?? ''; }
 
+  /**
+   * The run's console. Its latest start's output is kept in memory; without
+   * it (SaySpec restarted) the stored run log stands in, or else the reasons
+   * the run's tests could not run.
+   */
+  async console(input: { organizationId: string; projectId: string; runId: string }): Promise<{ text: string; seq: number }> {
+    const run = this.#store.run(input);
+    const kept = this.#consoles.get(run.id);
+    if (kept && kept.startedAt === run.startedAt) return { text: kept.text, seq: kept.seq };
+    if (run.artifacts?.some((artifact) => artifact.relativePath === 'patrol-run.log')) return { text: (await this.#store.readRunArtifact({ ...input, relativePath: 'patrol-run.log' })).toString('utf8'), seq: 0 };
+    const reasons = run.startedAt ? this.#store.runs(run.projectId, run.organizationId).attempts.filter((attempt) => attempt.runId === run.id && attempt.startedAt >= run.startedAt!).map((attempt) => attempt.detail).filter(Boolean) : [];
+    return { text: [...new Set(reasons)].join('\n'), seq: 0 };
+  }
+
+  #openConsole(runId: string, startedAt: string) {
+    clearTimeout(this.#consoles.get(runId)?.timer);
+    this.#consoles.delete(runId);
+    this.#consoles.set(runId, { startedAt, seq: 0, text: '', pending: '' });
+    for (const id of this.#consoles.keys()) {
+      if (this.#consoles.size <= MAX_CONSOLES) break;
+      if (!this.#runs.has(id)) { clearTimeout(this.#consoles.get(id)?.timer); this.#consoles.delete(id); }
+    }
+  }
+
+  /** Appends readable text to the run's console; it reaches the view in short batches. */
+  #print(runId: string, text: string) {
+    const kept = this.#consoles.get(runId);
+    if (!kept || !text) return;
+    kept.pending += text;
+    kept.timer ??= setTimeout(() => this.#flushConsole(runId), CONSOLE_BATCH_MS);
+  }
+
+  #flushConsole(runId: string) {
+    const kept = this.#consoles.get(runId);
+    if (!kept) return;
+    clearTimeout(kept.timer);
+    kept.timer = undefined;
+    if (!kept.pending) return;
+    const text = kept.pending;
+    kept.pending = '';
+    kept.seq += 1;
+    kept.text += text;
+    if (kept.text.length > MAX_CONSOLE_CHARS) kept.text = kept.text.slice(kept.text.indexOf('\n', kept.text.length - MAX_CONSOLE_CHARS) + 1);
+    this.#events.onConsole?.({ runId, startedAt: kept.startedAt, seq: kept.seq, text });
+  }
+
   async cancel(input: { organizationId: string; projectId: string; testId: string; attemptId: string }): Promise<PatrolAttempt> {
     const { attemptId } = input;
     const active = this.#active.get(attemptId);
@@ -167,6 +220,8 @@ export class PatrolRunner {
     this.#runs.set(run.id, control);
     this.#events.onRunStarted?.(run.id);
     const started = await this.#store.updateRun(run.id, { state: 'running', deviceId: input.deviceId, deviceName: device?.name ?? input.deviceId, startedAt: new Date().toISOString(), finishedAt: undefined, activeTestId: undefined, artifacts: undefined, analysis: undefined });
+    this.#openConsole(run.id, started.startedAt!);
+    this.#print(run.id, `Checking ${started.deviceName}, Flutter and Patrol…\n`);
     void (async () => {
       let ranOnDevice = false;
       let artifacts: PatrolAttempt['artifacts'] = [];
@@ -175,6 +230,8 @@ export class PatrolRunner {
       } catch { /* every failure path records its attempts first */ } finally {
         this.#runs.delete(run.id);
         const finished = await this.#store.updateRun(run.id, { state: control.stop ? 'canceled' : 'finished', finishedAt: new Date().toISOString(), activeTestId: undefined, artifacts }).catch(() => undefined);
+        this.#print(run.id, control.stop ? 'The run was stopped.\n' : 'The run finished.\n');
+        this.#flushConsole(run.id);
         const failed = this.#store.runs(run.projectId, run.organizationId).attempts.some((attempt) => attempt.runId === run.id && attempt.startedAt >= started.startedAt! && ['failed', 'infrastructure-error'].includes(attempt.state));
         if (finished && ranOnDevice && failed && !control.stop) this.#events.onRunFailed?.(finished, sourcePath);
       }
@@ -186,6 +243,7 @@ export class PatrolRunner {
     const items = run.items.map((item) => ({ item, test: this.#store.version(item.versionId) }));
     const scope = (item: PatrolRun['items'][number]) => ({ organizationId: run.organizationId, projectId: run.projectId, testId: item.testId, versionId: item.versionId, deviceId });
     const blockAll = async (state: 'blocked' | 'infrastructure-error' | 'canceled', detail: string) => {
+      this.#print(run.id, `${state === 'blocked' ? 'Blocked' : state === 'canceled' ? 'Stopped' : 'Could not run'}: ${detail}\n`);
       for (const { item, test } of items) await this.#recordBlocked(scope(item), test, state, detail, undefined, run.id);
       return { ranOnDevice: false, artifacts: [] };
     };
@@ -221,9 +279,10 @@ export class PatrolRunner {
       const targets: typeof items = [];
       for (const entry of items) {
         try {
-          await this.#materialize(sourcePath, entry.test.relativePath, entry.test.source, entry.test.contentHash);
+          await this.#materialize(sourcePath, entry.test);
           targets.push(entry);
         } catch (error) {
+          this.#print(run.id, `Could not write ${entry.test.relativePath} into the project: ${error instanceof Error ? error.message : String(error)}\n`);
           await finish(entry.item.testId, { state: 'infrastructure-error', summary: 'The saved test could not be written into the project.', detail: error instanceof Error ? error.message : String(error) });
         }
       }
@@ -236,6 +295,7 @@ export class PatrolRunner {
       const live = new Map<string, PatrolTestOutcome[]>();
       const outcome = await this.#execute({
         active, sourcePath, flutter: preflight.flutter, patrolPath: preflight.patrol.path, device: preflight.device, targets: targets.map((entry) => entry.test.relativePath), showFlutterLogs: true,
+        onOutput: (text) => this.#print(run.id, text),
         onLine: (raw) => {
           const line = stripAnsi(raw).trim();
           const started = /^🧪\s+(.*)$/.exec(line);
@@ -302,6 +362,7 @@ export class PatrolRunner {
       }
       return { ranOnDevice: true, artifacts: runArtifacts };
     } catch (error) {
+      this.#print(run.id, `The run could not complete: ${error instanceof Error ? error.message : String(error)}\n`);
       for (const [testId, attempt] of attempts) {
         if (!attempt.finishedAt) await finish(testId, { state: active.canceled ? 'canceled' : 'infrastructure-error', summary: 'The Patrol run could not complete.', detail: error instanceof Error ? error.message : String(error) });
       }
@@ -406,7 +467,7 @@ export class PatrolRunner {
     let materialized = false;
     await this.#store.recordAttempt(attempt);
     try {
-      previousSource = await this.#materialize(sourcePath, test.relativePath, test.source, test.contentHash);
+      previousSource = await this.#materialize(sourcePath, test);
       materialized = true;
       // A previous run's report must never be read as this run's result.
       await clearDeviceReports(sourcePath);
@@ -461,14 +522,21 @@ export class PatrolRunner {
     }
   }
 
-  /** Writes the saved source and refuses to continue if the file changed. */
-  async #materialize(sourcePath: string, relativePath: string, source: string, expectedHash: string) {
+  /**
+   * Writes the saved source and refuses to continue if the file changed.
+   * A file holding another saved version of the same test is SaySpec's own
+   * earlier copy (a run leaves its version in place), so a newer version, such
+   * as an applied fix or a teammate's change, replaces it.
+   */
+  async #materialize(sourcePath: string, test: PatrolSavedTest) {
+    const { relativePath, source, contentHash: expectedHash } = test;
     const { writeFile, mkdir } = await import('node:fs/promises');
     await assertSafeTestPath(sourcePath, relativePath);
     const absolute = path.join(sourcePath, relativePath);
     const existing = await readFile(absolute, 'utf8').catch(() => undefined);
     const existingHash = existing === undefined ? undefined : createHash('sha256').update(existing).digest('hex');
-    if (existingHash && existingHash !== expectedHash) {
+    const savedEarlier = this.#store.versions(test.projectId, test.organizationId, test.id).some((version) => version.contentHash === existingHash);
+    if (existingHash && existingHash !== expectedHash && !savedEarlier) {
       throw new Error(`${relativePath} in the project differs from the saved test. SaySpec will not overwrite changed source; review that file first.`);
     }
     await mkdir(path.dirname(absolute), { recursive: true });
@@ -488,7 +556,8 @@ export class PatrolRunner {
     else await writeFile(absolute, previous);
   }
 
-  async #execute(input: { active: ActiveProcess; sourcePath: string; flutter: Preflight['flutter']; patrolPath: string; device: FlutterDeviceSummary; targets: readonly string[]; showFlutterLogs?: boolean; onLine?: (line: string) => void }) {
+  /** `onOutput` receives the command and Patrol's output as readable lines; `onLine` the raw lines. */
+  async #execute(input: { active: ActiveProcess; sourcePath: string; flutter: Preflight['flutter']; patrolPath: string; device: FlutterDeviceSummary; targets: readonly string[]; showFlutterLogs?: boolean; onLine?: (line: string) => void; onOutput?: (text: string) => void }) {
     const { active, device } = input;
     // patrol_cli discovers tests under patrol_test/; the targets are passed
     // explicitly so only the saved tests under execution run. Several targets
@@ -497,13 +566,14 @@ export class PatrolRunner {
     // simulator's own runtime, which fails for an older runtime.
     const osVersion = device.platform === 'ios' ? simulatorOsVersion(device) : undefined;
     const args = ['--flutter-command', input.flutter.flutterPath, 'test', '-d', flutterDeviceId(device), ...(osVersion ? ['--ios', osVersion] : []), ...input.targets.flatMap((target) => ['--target', target]), '--verbose', ...(input.showFlutterLogs ? ['--show-flutter-logs'] : [])];
+    input.onOutput?.(`$ patrol ${args.join(' ')}\n`);
     const child = spawn(input.patrolPath, args, { cwd: input.sourcePath, env: input.flutter.environment });
     active.child = child;
     const tests = new Map<string, PatrolTestOutcome>();
     let buffer = '';
     let failedBuild = false;
     let canceled = false;
-    const timeout = setTimeout(() => { failedBuild = true; child.kill('SIGKILL'); }, BUILD_TIMEOUT_MS + RUN_TIMEOUT_MS * Math.max(1, input.targets.length));
+    const timeout = setTimeout(() => { failedBuild = true; input.onOutput?.('Patrol did not finish in time and was ended.\n'); child.kill('SIGKILL'); }, BUILD_TIMEOUT_MS + RUN_TIMEOUT_MS * Math.max(1, input.targets.length));
 
     const consume = (chunk: string) => {
       active.log.push(chunk);
@@ -512,6 +582,7 @@ export class PatrolRunner {
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
       for (const line of lines) {
+        input.onOutput?.(`${stripAnsi(line).trimEnd()}\n`);
         input.onLine?.(line);
         const trimmed = line.trim();
         if (!trimmed.startsWith('{')) {
@@ -537,12 +608,21 @@ export class PatrolRunner {
           clearInterval(watcher);
           failedBuild = true;
           active.log.push('\nThe device disconnected while the test was running.\n');
+          input.onOutput?.('The device disconnected while the test was running.\n');
           child.kill('SIGTERM');
         }
       }, 3_000);
       child.once('exit', () => clearInterval(watcher));
     });
     clearTimeout(timeout);
+    // Output can still arrive after the exit event; it is read before the run
+    // is summarized, unless a process Patrol started keeps the pipes open.
+    await Promise.race([
+      Promise.all([child.stdout, child.stderr].map((stream) => stream.closed ? undefined : new Promise((resolve) => stream.once('close', resolve)))),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ]);
+    if (buffer.trim()) input.onOutput?.(`${stripAnsi(buffer).trimEnd()}\n`);
+    input.onOutput?.(canceled || active.canceled ? 'Patrol was stopped.\n' : exitCode === null ? 'Patrol ended without an exit code.\n' : `Patrol exited with code ${exitCode}.\n`);
     const outcomes = [...tests.values()];
     const truncated = active.log.join('').length >= MAX_LOG_BYTES;
     return {

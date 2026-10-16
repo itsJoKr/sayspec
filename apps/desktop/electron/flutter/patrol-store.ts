@@ -2,7 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readableLog } from './patrol-log.ts';
-import type { CodingAgentProviderId, FailureAnalysis, PatrolAttempt, PatrolDeviceLease, PatrolRun, PatrolRuntimeManifest, PatrolSavedTest } from '@sayspec/contracts';
+import type { CodingAgentProviderId, FailureAnalysis, ManagedTestFixProposal, PatrolAttempt, PatrolDeviceLease, PatrolRun, PatrolRuntimeManifest, PatrolSavedTest } from '@sayspec/contracts';
+import { proposalContentHash } from '../execution/managed-test-fix.ts';
+import { createPatrolTestFixProposal } from './patrol-test-fix.ts';
 
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}$/;
 
@@ -19,11 +21,13 @@ export class PatrolRunStore {
   readonly #leasesPath: string;
   readonly #analysesPath: string;
   readonly #runsPath: string;
+  readonly #proposalsPath: string;
   #runs: PatrolRun[] = [];
   #tests: PatrolSavedTest[] = [];
   #attempts: PatrolAttempt[] = [];
   #leases: PatrolDeviceLease[] = [];
   #analyses: FailureAnalysis[] = [];
+  #proposals: ManagedTestFixProposal[] = [];
 
   constructor(root: string) {
     this.#root = root;
@@ -32,6 +36,7 @@ export class PatrolRunStore {
     this.#leasesPath = path.join(root, 'leases.json');
     this.#analysesPath = path.join(root, 'analyses.json');
     this.#runsPath = path.join(root, 'runs.json');
+    this.#proposalsPath = path.join(root, 'test-fix-proposals.json');
   }
 
   async initialize() {
@@ -42,6 +47,7 @@ export class PatrolRunStore {
     this.#leases = await readJson<PatrolDeviceLease[]>(this.#leasesPath) ?? [];
     this.#analyses = await readJson<FailureAnalysis[]>(this.#analysesPath) ?? [];
     this.#runs = await readJson<PatrolRun[]>(this.#runsPath) ?? [];
+    this.#proposals = await readJson<ManagedTestFixProposal[]>(this.#proposalsPath) ?? [];
     // Leases and runs never outlive the process that held them.
     const now = new Date().toISOString();
     for (const lease of this.#leases) if (!lease.releasedAt) lease.releasedAt = now;
@@ -60,7 +66,7 @@ export class PatrolRunStore {
     return this.#tests.filter((test) => test.projectId === projectId && test.organizationId === organizationId && test.id === testId).sort((left, right) => right.version - left.version);
   }
 
-  async saveTest(input: { testId?: string; projectId: string; organizationId: string; title: string; relativePath: string; source: string; recordingCaptureId?: string; dependencies?: Readonly<Record<string, string>>; validationAttemptId?: string; provider?: CodingAgentProviderId; validatedRuntime?: PatrolRuntimeManifest; state?: PatrolSavedTest['state'] }): Promise<PatrolSavedTest> {
+  async saveTest(input: { testId?: string; projectId: string; organizationId: string; title: string; relativePath: string; source: string; recordingCaptureId?: string; dependencies?: Readonly<Record<string, string>>; appVersion?: string; validationAttemptId?: string; provider?: CodingAgentProviderId; validatedRuntime?: PatrolRuntimeManifest; state?: PatrolSavedTest['state'] }): Promise<PatrolSavedTest> {
     if (!SAFE_ID.test(input.projectId) || !SAFE_ID.test(input.organizationId)) throw new Error('Patrol test scope is invalid.');
     if (!/^patrol_test\/[A-Za-z0-9_./-]+\.dart$/.test(input.relativePath) || input.relativePath.includes('..')) throw new Error('A Patrol test must live under patrol_test/ with a .dart extension, because that is the folder patrol_cli discovers.');
     if (!input.source.includes("package:patrol/patrol.dart") || !/patrolTest\s*\(/.test(input.source)) throw new Error('The saved source is not a Patrol test.');
@@ -84,6 +90,7 @@ export class PatrolRunStore {
       createdAt: new Date().toISOString(),
       ...(input.recordingCaptureId ? { recordingCaptureId: input.recordingCaptureId } : {}),
       ...(input.dependencies ? { dependencies: input.dependencies } : {}),
+      ...(input.appVersion ? { appVersion: input.appVersion } : {}),
       ...(input.validationAttemptId ? { validationAttemptId: input.validationAttemptId } : {}),
       ...(input.provider ? { provider: input.provider } : {}),
       ...(input.validatedRuntime ? { validatedRuntime: input.validatedRuntime } : {}),
@@ -207,6 +214,65 @@ export class PatrolRunStore {
     await writeFile(this.#analysesPath, JSON.stringify(this.#analyses, null, 2));
     return structuredClone(analysis);
   }
+
+  testFixProposals(input: { organizationId: string; projectId: string; testId?: string }) {
+    return structuredClone(this.#proposals.filter((item) => item.organizationId === input.organizationId && item.projectId === input.projectId && (!input.testId || item.testId === input.testId)));
+  }
+
+  /** Records a test-fix proposal against the failed version its analysis names. */
+  async proposeTestFix(input: { organizationId: string; projectId: string; testId: string; analysisId: string; changes: { relativePath: string; text: string }[]; rationale: string }) {
+    const analysis = this.#analyses.find((item) => item.id === input.analysisId && item.organizationId === input.organizationId && item.projectId === input.projectId && item.testId === input.testId);
+    if (!analysis) throw new Error('The failure analysis was not found in this project.');
+    const { version } = this.failedAttempt(analysis);
+    const proposal = createPatrolTestFixProposal({ version, analysis, changes: input.changes, rationale: input.rationale });
+    this.#proposals.push(proposal); await this.#persistProposals(); return structuredClone(proposal);
+  }
+
+  async decideTestFix(input: { organizationId: string; projectId: string; testId: string; proposalId: string; actorUid: string; kind: 'approve' | 'reject' }) {
+    const proposal = this.#testFixProposal(input);
+    if (!SAFE_ID.test(input.actorUid) || !['approve', 'reject'].includes(input.kind)) throw new Error('Fix decision is invalid.');
+    if (proposal.proposalHash !== proposalContentHash(proposal)) throw new Error('The proposal changed since it was created.');
+    if (proposal.status === 'approved' && input.kind === 'approve' && proposal.decision?.actorUid === input.actorUid) return structuredClone(proposal);
+    if (proposal.status !== 'proposed') throw new Error('This proposal already has a decision.');
+    proposal.status = input.kind === 'approve' ? 'approved' : 'rejected';
+    proposal.decision = { actorUid: input.actorUid, decidedAt: new Date().toISOString(), proposalHash: proposal.proposalHash, baseContentHash: proposal.baseContentHash, kind: input.kind };
+    await this.#persistProposals(); return structuredClone(proposal);
+  }
+
+  /**
+   * Saves an approved proposal as the test's next version. The version is
+   * unvalidated until it passes on a device; the failed version and its
+   * attempts stay as they were. Applying again returns the same version.
+   */
+  async applyTestFix(input: { organizationId: string; projectId: string; testId: string; proposalId: string; actorUid: string }) {
+    const proposal = this.#testFixProposal(input);
+    const intact = proposal.decision?.kind === 'approve' && proposal.decision.actorUid === input.actorUid && proposal.decision.proposalHash === proposal.proposalHash && proposal.decision.baseContentHash === proposal.baseContentHash && proposal.proposalHash === proposalContentHash(proposal);
+    if (proposal.status === 'applied' && proposal.appliedVersionId) {
+      if (!intact) throw new Error('An intact, authorized approval is required to read this applied version.');
+      return structuredClone(this.version(proposal.appliedVersionId));
+    }
+    if (proposal.status !== 'approved' || !intact) throw new Error('An intact, authorized approval is required to apply this fix.');
+    const base = this.version(proposal.baseVersionId);
+    const latest = this.versions(input.projectId, input.organizationId, input.testId)[0];
+    if (latest?.versionId !== base.versionId || base.contentHash !== proposal.baseContentHash || createHash('sha256').update(base.source).digest('hex') !== base.contentHash) throw new Error('The saved test changed since this proposal was reviewed. Run it again and propose a new fix.');
+    const [change] = proposal.fileChanges;
+    if (proposal.fileChanges.length !== 1 || change.relativePath !== base.relativePath || change.baseSha256 !== base.contentHash || change.proposedSha256 !== createHash('sha256').update(change.proposedText).digest('hex')) throw new Error('A proposed file failed hash verification.');
+    const version = await this.saveTest({
+      testId: base.id, projectId: base.projectId, organizationId: base.organizationId, title: base.title, relativePath: base.relativePath, source: change.proposedText, state: 'generated',
+      ...(base.recordingCaptureId ? { recordingCaptureId: base.recordingCaptureId } : {}), ...(base.dependencies ? { dependencies: base.dependencies } : {}),
+      ...(base.appVersion ? { appVersion: base.appVersion } : {}), ...(base.provider ? { provider: base.provider } : {}),
+    });
+    proposal.status = 'applied'; proposal.appliedVersionId = version.versionId;
+    await this.#persistProposals(); return structuredClone(version);
+  }
+
+  #testFixProposal(input: { organizationId: string; projectId: string; testId: string; proposalId: string }) {
+    const proposal = this.#proposals.find((item) => item.id === input.proposalId && item.organizationId === input.organizationId && item.projectId === input.projectId && item.testId === input.testId);
+    if (!proposal) throw new Error('Fix proposal was not found in this project.');
+    return proposal;
+  }
+
+  #persistProposals() { return writeFile(this.#proposalsPath, JSON.stringify(this.#proposals, null, 2)); }
 
   /** Acquires an exclusive lease so two runs never drive one device at once. */
   async acquireLease(input: { deviceId: string; attemptId: string }): Promise<PatrolDeviceLease> {

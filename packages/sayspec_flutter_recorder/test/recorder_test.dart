@@ -107,7 +107,7 @@ void main() {
         jsonDecode(jsonEncode(envelope.toJson())) as Map<String, dynamic>;
     expect(json['kind'], 'sayspec-flutter-recording');
     expect(json['schemaVersion'], 1);
-    expect((json['sdk'] as Map<String, dynamic>)['version'], '0.11.0');
+    expect((json['sdk'] as Map<String, dynamic>)['version'], '0.12.0');
     expect((json['clock'] as Map<String, dynamic>)['uncertaintyMs'], 3);
   });
 

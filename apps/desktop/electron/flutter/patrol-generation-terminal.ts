@@ -10,7 +10,7 @@ import { FLUTTER_RECORDING_TO_PATROL_SKILL } from './flutter-recording-to-patrol
 import { readPatrolDependencyManifest, validatePatrolGenerationSubmission } from './patrol-generation.ts';
 import { PatrolRunner } from './patrol-runner.ts';
 import { PatrolRunStore } from './patrol-store.ts';
-import { resolveProjectFlutterToolchain } from './toolchain.ts';
+import { readPubspecVersion, resolveProjectFlutterToolchain } from './toolchain.ts';
 import { commonToolDirectories } from '../setup/environment.ts';
 import { readSessionMarker, writeSessionMarker } from '../coding-agent/session-marker.ts';
 import { submitTerminalPrompt } from '../coding-agent/terminal-prompt.ts';
@@ -187,10 +187,13 @@ export class PatrolGenerationTerminalManager {
       this.#emit({ sessionId, kind: 'validation', captureId, attempt });
       if (attempt.state !== 'passed' || attempt.passed < 1) throw new ValidationAttemptError(attempt, `Patrol validation did not pass: ${attempt.summary} ${attempt.detail}`.trim());
       if (attempt.testContentHash !== validated.sourceSha256 || attempt.runtime.testFileHashes[validated.submission.relativePath] !== validated.sourceSha256) throw new ValidationAttemptError(attempt, 'The passing report does not match the exact submitted Patrol source.');
+      // The version the app had when recorded; recordings from before SaySpec kept it fall back to the checkout's.
+      const appVersion = summary.appVersion ?? await readPubspecVersion(session.sourcePath);
       const test = await this.#runs.saveTest({
         projectId: summary.projectId, organizationId: summary.organizationId, title: validated.submission.title,
         relativePath: validated.submission.relativePath, source: validated.submission.source, recordingCaptureId: captureId,
         dependencies: validated.submission.dependencies, validationAttemptId: attempt.id, provider: session.provider, validatedRuntime: attempt.runtime, state: 'published',
+        ...(appVersion ? { appVersion } : {}),
       });
       if (test.contentHash !== attempt.testContentHash) throw new Error('The saved Patrol source differs from the source that passed validation.');
       await this.#onSaved(test);

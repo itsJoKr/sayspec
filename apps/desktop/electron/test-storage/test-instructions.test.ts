@@ -8,6 +8,7 @@ import { SavedWebTestStore } from '../execution/saved-web-tests.ts';
 import { PatrolRunStore } from '../flutter/patrol-store.ts';
 import { LocalWorkspaceStore } from '../local-workspace.ts';
 import { testInstructionsSkill, TEST_INSTRUCTIONS_QUESTION } from '../setup/setup-agent-skill.ts';
+import { CloudUploadQueue } from './cloud-upload-queue.ts';
 import { INSTRUCTIONS_FILE, instructionsTemplate, reconcileCloudInstructions, TestInstructions } from './test-instructions.ts';
 import { TestStorage } from './test-storage.ts';
 import { TestStorageSettingsStore } from './test-storage-settings.ts';
@@ -21,7 +22,8 @@ async function fixture() {
   const localWorkspace = new LocalWorkspaceStore(path.join(root, 'workspace.json')); await localWorkspace.initialize();
   const webTests = new SavedWebTestStore(path.join(root, 'web')); await webTests.initialize();
   const patrolTests = new PatrolRunStore(path.join(root, 'patrol')); await patrolTests.initialize();
-  const storage = new TestStorage({ settings, localWorkspace, webTests, patrolTests, localRoot: path.join(root, 'local-tests'), gitIdentity: async () => ({}) });
+  const cloudUploads = new CloudUploadQueue(path.join(root, 'cloud-uploads.json')); await cloudUploads.initialize();
+  const storage = new TestStorage({ settings, localWorkspace, webTests, patrolTests, cloudUploads, localRoot: path.join(root, 'local-tests'), gitIdentity: async () => ({}) });
   const instructions = new TestInstructions((scope) => storage.instructionsLocation(scope));
   return { root, folder, storage, instructions, webTests, patrolTests, scope: { organizationId: 'org_team', projectId: 'project_shop' } };
 }

@@ -51,7 +51,7 @@ export interface FailureAnalysis {
 export interface ManagedTestFixProposal {
   schemaVersion: 1; id: string; organizationId: string; projectId: string; testId: string;
   attemptId: string; analysisId: string; baseVersionId: string; baseContentHash: string;
-  scope: 'managed-web-test'; createdAt: string; proposalHash: string;
+  scope: 'managed-web-test' | 'managed-patrol-test'; createdAt: string; proposalHash: string;
   rationale: string; assertionImpact: string[]; diff: string;
   fileChanges: { relativePath: string; baseSha256: string; proposedSha256: string; proposedText: string }[];
   status: 'proposed' | 'approved' | 'rejected' | 'applied' | 'stale';
@@ -75,6 +75,45 @@ export interface ApplicationFixReceipt {
   changedPaths: string[]; baseHashes: Record<string, string>; appliedHashes: Record<string, string>;
   originatingAttemptId: string; originatingAnalysisId: string; testVersionId: string; testVersionHash: string;
   clientReported: true;
+}
+/**
+ * What SaySpec can commit to Git. An applied application fix commits exactly
+ * its changed files; `tests` commits test files in the project's storage
+ * folder (all of them, or those of `testIds`); `source` only reports the
+ * selected source folder's repository.
+ */
+export type GitTarget =
+  | { kind: 'application-fix'; organizationId: string; projectId: string; testId: string; proposalId: string; sourceHandle: string }
+  | { kind: 'tests'; organizationId: string; projectId: string; testIds?: string[] }
+  | { kind: 'source'; sourceHandle: string };
+export interface GitRepositoryStatus {
+  repository: boolean;
+  /** Why there is no repository to commit to, when that needs saying (Git missing, tests in SaySpec Cloud). */
+  note?: string;
+  /** The repository's folder name. */
+  name?: string;
+  branch?: string; detached?: boolean;
+  /** The checked-out branch was created by SaySpec, so new commits can be added to it. */
+  sayspecBranch?: { name: string; baseBranch: string };
+  remote?: { name: string; url: string; webUrl?: string; host: 'github' | 'gitlab' | 'bitbucket' | 'other' };
+  /** How a pull request is opened: created with the GitHub CLI, or in the browser. */
+  pullRequests?: 'github-cli' | 'browser';
+}
+export interface GitChangedFile { path: string; status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' }
+export interface GitCommitRecord {
+  id: string; targetKey: string; repositoryName: string; branch: string; baseBranch: string; commit: string; subject: string;
+  paths: string[]; createdAt: string; createdBranch: boolean;
+  remote?: string; pushedAt?: string; pullRequestUrl?: string; pullRequestOpenedAt?: string;
+}
+export interface GitTargetView {
+  status: GitRepositoryStatus;
+  /** Uncommitted changes SaySpec may commit for this target, as paths from the repository root. */
+  changes: GitChangedFile[];
+  /** Why the changes cannot be committed by SaySpec. */
+  blocked?: string;
+  suggestedBranch: string; suggestedMessage: string;
+  /** SaySpec's commits for this target, newest first. */
+  commits: GitCommitRecord[];
 }
 export interface ApplicationPatchLink {
   receiptId: string; proposalId: string; proposalHash: string; originatingAttemptId: string;
@@ -136,7 +175,12 @@ export interface LibraryTest {
 export interface TestLibrarySnapshot { storage: TestStorageMode; tests: LibraryTest[]; suites: TestSuite[]; }
 /** A test's source, portable between storages. A saved Web version and a cloud generation draft both fit. */
 export type PortableWebSource = Pick<SavedWebTestVersion, 'title' | 'steps' | 'files' | 'runtime' | 'provenance'> & { recordingId?: string };
-export type PortablePatrolSource = Pick<PatrolSavedTest, 'title' | 'relativePath' | 'source'> & Partial<Pick<PatrolSavedTest, 'recordingCaptureId' | 'dependencies' | 'provider'>>;
+export type PortablePatrolSource = Pick<PatrolSavedTest, 'title' | 'relativePath' | 'source'> & Partial<Pick<PatrolSavedTest, 'recordingCaptureId' | 'dependencies' | 'provider' | 'appVersion'>>;
+/** A Flutter test's current version as SaySpec Cloud stores it, pulled to this Mac to run locally. */
+export interface CloudPatrolTestVersion {
+  testId: string; title: string; relativePath: string; source: string; contentHash: string;
+  appVersion?: string; dependencies?: Readonly<Record<string, string>>; recordingId?: string; provider?: CodingAgentProviderId;
+}
 /** One test being copied to another storage, with its suite by name. */
 export interface PortableLibraryTest { id: string; title: string; suite: string | null; authorLabel?: string; createdAt?: string; recordingId?: string; web?: PortableWebSource; patrol?: PortablePatrolSource; }
 export interface PortableLibrary { tests: PortableLibraryTest[]; suites: string[]; }
@@ -567,6 +611,8 @@ export interface FlutterCaptureSummary {
   appId: string;
   /** The entry point the app was launched with, when one was chosen. */
   entryPoint?: { name: string; command: string };
+  /** The app's pubspec.yaml version when it was recorded, for example 2.4.0+57. */
+  appVersion?: string;
   recorderSdkVersion: string;
   recorderSchemaVersion: number;
   completenessWarnings: readonly string[];
@@ -678,6 +724,8 @@ export interface PatrolSavedTest {
   recordingCaptureId?: string;
   /** Exact dependency manifest submitted with the generated source. */
   dependencies?: Readonly<Record<string, string>>;
+  /** The app's pubspec.yaml version when the test was recorded, for example 2.4.0+57. */
+  appVersion?: string;
   /** Passing attempt whose testContentHash equals contentHash. */
   validationAttemptId?: string;
   provider?: CodingAgentProviderId;
@@ -763,8 +811,27 @@ export interface PatrolRunAnalysis {
   startedAt: string;
   finishedAt?: string;
   detail?: string;
+  /** The report's issues, read from the agent's analysis.json once the report is written. */
+  issues?: PatrolRunIssue[];
+}
+export type PatrolRunIssueVerdict = 'app-bug' | 'bad-test' | 'environment' | 'flaky' | 'unclear';
+/** Tests of a run that fail for one reason, with the agent's verdict on it. */
+export interface PatrolRunIssue {
+  id: string;
+  verdict: PatrolRunIssueVerdict;
+  summary: string;
+  nextStep: string;
+  /** Run items the issue names; empty when the agent named none of them. */
+  testIds: string[];
+  /** What the test expected and what happened, when the agent said. */
+  expected?: string;
+  actual?: string;
+  /** Log lines the agent relied on. */
+  evidence: string[];
 }
 export interface PatrolRunAnalysisEvent { runId: string; kind: 'data' | 'exit' | 'report'; seq: number; data?: string; exitCode?: number; }
+/** New readable lines of a run's console; `startedAt` names the start they belong to. */
+export interface PatrolRunConsoleEvent { runId: string; startedAt: string; seq: number; text: string; }
 export interface PatrolDeviceLease {
   id: string;
   deviceId: string;
@@ -822,6 +889,12 @@ export interface DesktopBridge {
   syncCloudTestInstructions(input: TestLibraryScope & { cloudText: string | null }): Promise<{ upload?: string }>;
   /** Reads every test and suite from the project's current storage on this machine (not SaySpec Cloud). */
   exportTestLibrary(input: TestLibraryScope): Promise<PortableLibrary>;
+  /** Flutter tests saved on this Mac that SaySpec Cloud does not have yet: each one's latest version. */
+  listPendingCloudPatrolTests(input: TestLibraryScope): Promise<PatrolSavedTest[]>;
+  /** Records that SaySpec Cloud now holds this version, so it is no longer pending. */
+  markCloudPatrolTestUploaded(input: TestLibraryScope & { testId: string; versionId: string }): Promise<void>;
+  /** Saves SaySpec Cloud's current Flutter test versions on this Mac, where runs read them. Tests with pending uploads are skipped. */
+  pullCloudPatrolTests(input: TestLibraryScope & { versions: CloudPatrolTestVersion[] }): Promise<void>;
   /** Copies tests into on-device storage (Local or a folder) without switching to it. */
   importTestLibrary(input: TestLibraryScope & { targetType: 'web' | 'flutter'; mode: Exclude<TestStorageMode, 'cloud'>; folderHandle?: string; library: PortableLibrary }): Promise<TestStorageCopyResult>;
   /** The signed-in person written as the author of tests saved to a folder; null falls back to the folder's git identity. */
@@ -972,6 +1045,13 @@ export interface DesktopBridge {
   readPatrolArtifact(input: { organizationId: string; projectId: string; testId: string; attemptId: string; relativePath: string }): Promise<{ bytes: Uint8Array; mimeType: string }>;
   /** Plain-text log of one test of a run, or of the whole run when attemptId is omitted. */
   readPatrolRunLog(input: { organizationId: string; projectId: string; runId: string; attemptId?: string }): Promise<string>;
+  /**
+   * The run's console so far: Patrol's output of its latest start and why it
+   * could not run. Without that start's output in memory (SaySpec restarted),
+   * the stored run log or the recorded reasons.
+   */
+  attachPatrolRunConsole(input: { organizationId: string; projectId: string; runId: string }): Promise<{ text: string; seq: number }>;
+  onPatrolRunConsole(listener: (event: PatrolRunConsoleEvent) => void): () => void;
   /** Output so far of the run's analysis terminal; the session token is present while the agent is live. */
   attachPatrolRunAnalysis(input: { organizationId: string; projectId: string; runId: string }): Promise<{ output: string; seq: number; sessionToken?: string }>;
   writePatrolRunAnalysis(input: { runId: string; sessionToken: string; data: string }): Promise<void>;
@@ -981,5 +1061,25 @@ export interface DesktopBridge {
   /** Opens the analysis HTML report in the default browser. */
   openPatrolRunReport(input: { organizationId: string; projectId: string; runId: string }): Promise<void>;
   onPatrolRunAnalysisEvent(listener: (event: PatrolRunAnalysisEvent) => void): () => void;
+  /**
+   * Turns one app-bug or bad-test issue of a run's analysis into what a fix
+   * session takes: the test's failed attempt in the run and a failure analysis
+   * of it built from the issue. Asking again for the same issue returns the same analysis.
+   */
+  preparePatrolIssueFix(input: { organizationId: string; projectId: string; runId: string; issueId: string; testId: string }): Promise<{ attempt: PatrolAttempt; analysis: FailureAnalysis }>;
+  /** Test-fix proposals for the project's saved Patrol tests. */
+  listPatrolTestFixProposals(input: { organizationId: string; projectId: string; idToken?: string }): Promise<ManagedTestFixProposal[]>;
+  /** Starts a test-fix session; its terminal is driven through the managed-fix write/resize/close calls and events. */
+  startPatrolTestFixSession(input: { organizationId: string; projectId: string; testId: string; attemptId: string; analysisId: string; sourceHandle?: string; cols: number; rows: number; idToken?: string }): Promise<{ state: 'running'; sessionToken: string }>;
+  decidePatrolTestFix(input: { organizationId: string; projectId: string; testId: string; proposalId: string; kind: 'approve' | 'reject'; idToken?: string }): Promise<ManagedTestFixProposal>;
+  /** Saves the approved proposal as the test's next version, unvalidated until it passes on a device. */
+  applyPatrolTestFix(input: { organizationId: string; projectId: string; testId: string; proposalId: string; idToken?: string }): Promise<PatrolSavedTest>;
   listPatrolLeases(): Promise<PatrolDeviceLease[]>;
+  /** The target's repository, its committable changes and SaySpec's earlier commits for it. */
+  getGitView(input: { target: GitTarget }): Promise<GitTargetView>;
+  /** Commits `paths` to a new SaySpec branch, or to the checked-out branch when SaySpec created it. */
+  commitGitChanges(input: { target: GitTarget; paths: string[]; message: string; branch: { kind: 'new'; name: string } | { kind: 'current' } }): Promise<GitCommitRecord>;
+  pushGitCommit(input: { target: GitTarget; commitId: string }): Promise<GitCommitRecord>;
+  /** Creates the pull request with the GitHub CLI when it is signed in, otherwise opens the host's new-pull-request page. */
+  openGitPullRequest(input: { target: GitTarget; commitId: string }): Promise<GitCommitRecord>;
 }

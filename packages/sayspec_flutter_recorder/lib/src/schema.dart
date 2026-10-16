@@ -5,7 +5,7 @@
 /// major version it does not understand instead of guessing at missing fields.
 class SaySpecRecorderSchema {
   /// SDK release version included in every recording envelope.
-  static const String sdkVersion = '0.11.0';
+  static const String sdkVersion = '0.12.0';
 
   /// Increment on any breaking change to the envelope or event payload.
   static const int version = 1;

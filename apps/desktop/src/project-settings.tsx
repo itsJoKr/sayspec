@@ -47,7 +47,7 @@ function ProjectCreationForm({ scope, onCreated, compact = false }: { scope: Sco
   const [storageFolder, setStorageFolder] = useState<LocalSourceSelection | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
-  const cloudReason = cloudUnavailableReason({ signedIn: true, plan: scope.plan, targetType: technology });
+  const cloudReason = cloudUnavailableReason({ signedIn: true, plan: scope.plan });
   const storage = storageChoice === 'cloud' && cloudReason ? 'local' : storageChoice ?? defaultStorage(cloudReason);
 
   async function chooseSource() {
@@ -91,22 +91,19 @@ export function ProjectSettings({ scope, source: selectedSource, onSource, onPro
   const selectedProject = scope.projects.find((project) => project.id === scope.projectId);
   const selectedOrganization = scope.organizations.find((organization) => organization.id === scope.organizationId);
   const targetType = selectedProject?.targetType ?? 'web';
-  const [environmentName, setEnvironmentName] = useState('Local acceptance');
-  const [baseUrl, setBaseUrl] = useState('http://127.0.0.1:4173');
-  const [appId, setAppId] = useState('dev.sayspec.fixture');
-  const [flavor, setFlavor] = useState('development');
+  const [baseUrl, setBaseUrl] = useState(selectedProject?.baseUrl ?? '');
   const [source, setSource] = useState<LocalSourceSelection | null>(selectedSource ?? null);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
-  useEffect(() => { setSource(selectedSource ?? null); setStatus(''); setError(''); setBaseUrl(selectedProject?.baseUrl ?? 'http://127.0.0.1:4173'); }, [scope.organizationId, scope.projectId, selectedProject?.baseUrl, selectedSource]);
+  useEffect(() => { setSource(selectedSource ?? null); setStatus(''); setError(''); setBaseUrl(selectedProject?.baseUrl ?? ''); }, [scope.organizationId, scope.projectId, selectedProject?.baseUrl, selectedSource]);
   const canManage = selectedOrganization?.role === 'owner' || selectedOrganization?.role === 'admin';
 
-  async function configure(event: FormEvent) {
-    event.preventDefault(); setError(''); setStatus('Saving project settings…');
+  async function saveBaseUrl(event: FormEvent) {
+    event.preventDefault(); setError(''); setStatus('Saving base URL…');
     try {
-      await cloud.projects.configure({ organizationId: scope.organizationId, projectId: scope.projectId, targetType, environment: { id: 'environment_local', name: environmentName, ...(targetType === 'web' ? { baseUrl } : { appId, flavor }) } });
-      setStatus('Project settings saved.');
+      await cloud.projects.setBaseUrl({ organizationId: scope.organizationId, projectId: scope.projectId, baseUrl });
+      setStatus('Base URL saved.');
     } catch (reason) { setStatus(''); setError(messageOf(reason)); }
   }
   async function chooseSource() {
@@ -122,12 +119,11 @@ export function ProjectSettings({ scope, source: selectedSource, onSource, onPro
 
   if (!selectedProject) return null;
   return <div className="settings-stack">
-    <section className="settings-card project-settings-summary" aria-labelledby="environment-heading"><div className="settings-card__header"><div><h2 id="environment-heading">{selectedProject.name}</h2><p className="technology-label">{targetType === 'web' ? 'Web · Playwright tests' : 'Flutter · Patrol tests'}</p></div><DeleteProjectButton key={selectedProject.id} projectName={selectedProject.name} consequence="Deletes the project for everyone in this workspace, with its tests, versions, runs and shared recordings. Tests kept in a storage folder stay on disk." disabledReason={canManage ? undefined : 'Only an organization owner or admin can delete a project.'} onDelete={deleteProject} /></div>
-      <form className="settings-form" onSubmit={configure}>
-        <Field label="Environment name" value={environmentName} onChange={(event) => setEnvironmentName(event.target.value)} required />
-        {targetType === 'web' ? <Field label="Base URL" type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} error={baseUrl && !/^https?:\/\//.test(baseUrl) ? 'Enter a complete HTTP(S) URL.' : undefined} required /> : <><Field label="Application ID" value={appId} onChange={(event) => setAppId(event.target.value)} required /><Field label="Build flavor" value={flavor} onChange={(event) => setFlavor(event.target.value)} /></>}
-        <Button variant="primary" disabled={!canManage}>Save project settings</Button>
-      </form>
+    <section className="settings-card project-settings-summary" aria-labelledby="project-heading"><div className="settings-card__header"><div><h2 id="project-heading">{selectedProject.name}</h2><p className="technology-label">{targetType === 'web' ? 'Web · Playwright tests' : 'Flutter · Patrol tests'}</p></div><DeleteProjectButton key={selectedProject.id} projectName={selectedProject.name} consequence="Deletes the project for everyone in this workspace, with its tests, versions, runs and shared recordings. Tests kept in a storage folder stay on disk." disabledReason={canManage ? undefined : 'Only an organization owner or admin can delete a project.'} onDelete={deleteProject} /></div>
+      {targetType === 'web' && <form className="settings-form" onSubmit={saveBaseUrl}>
+        <Field label="Base URL" type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} error={baseUrl && !/^https?:\/\//.test(baseUrl) ? 'Enter a complete HTTP(S) URL.' : undefined} required />
+        <Button variant="primary" disabled={!canManage}>Save base URL</Button>
+      </form>}
     </section>
     <AiProviderSettings />
     <MachineSetupCard projectId={selectedProject.id} targetType={targetType} sourceHandle={source?.handle} onSourceRequired={() => void chooseSource()} />

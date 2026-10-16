@@ -81,6 +81,7 @@ export function AccountPanel({ authSession, pro = false, entry = false, onJoinCo
   function openIn(next: Mode, button: HTMLButtonElement) { opener.current = button; setMode(next); setOpen(true); }
   if (state.user && onOpen) return <div className="account-panel" data-pro={pro ? 'true' : undefined}>
     <button type="button" className="account-summary" data-testid="open-account" aria-current={current ? 'page' : undefined} onClick={onOpen}><strong>{state.user.displayName ?? 'SaySpec user'}</strong><span>{state.user.email}</span></button>
+    <Button variant="quiet" className="account-sign-out" data-testid="sidebar-sign-out" onClick={() => void authSession.signOut()}>Sign out</Button>
     {state.status === 'offline' && <StatusLabel status="warning">Sign-in unavailable</StatusLabel>}
   </div>;
   return <div className={`account-panel${entry ? " account-panel--entry" : ""}`} data-pro={pro ? 'true' : undefined}>

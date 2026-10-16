@@ -1,7 +1,16 @@
 import { createServer } from 'vite';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import electron from 'electron';
-import './build-electron.mjs';
+
+// With SAYSPEC_ENV unset, a git-ignored .env.live makes this the live debug app (like
+// `npm run dev:live`); without one it stays local-only. `npm run dev:local` forces local-only.
+if (process.env.SAYSPEC_ENV === undefined && existsSync(new URL('../.env.live', import.meta.url))) {
+  process.env.SAYSPEC_ENV = 'live';
+  process.env.SAYSPEC_DEBUG_BUILD ??= '1';
+}
+// Imported after SAYSPEC_ENV is settled: it builds main and preload from that env file.
+await import('./build-electron.mjs');
 
 const server = await createServer();
 try {

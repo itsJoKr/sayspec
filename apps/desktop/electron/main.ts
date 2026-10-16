@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences, type OpenDialogOptions } from 'electron';
 import path from 'node:path';
+import { appendFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import type { AppInfo, CodingAgentProviderId, CreateLocalProjectInput, PortableLibrary, SuiteChange, WebRecordingStartInput } from '@sayspec/contracts';
+import type { AppInfo, CloudPatrolTestVersion, CodingAgentProviderId, CreateLocalProjectInput, PortableLibrary, SuiteChange, WebRecordingStartInput } from '@sayspec/contracts';
 import { validateEntryPoints } from '@sayspec/contracts';
 import { accountPortalUrl, isTrustedMainFrame, rendererFileUrl } from './security';
 import { authorizeFixDecision, type FixDecision } from './cloud-fix-authority';
@@ -19,6 +20,7 @@ import { PlaywrightGenerationManager } from './generation/playwright-generation'
 import { SavedWebTestStore } from './execution/saved-web-tests';
 import { FailureAnalysisManager } from './execution/failure-analysis';
 import { ManagedTestFixSessionManager } from './execution/managed-test-fix-session';
+import { patrolTestFixSubject } from './flutter/patrol-test-fix';
 import { ApplicationFixStore } from './execution/application-fix';
 import { ApplicationFixSessionManager } from './execution/application-fix-session';
 import { startPatchedWebServer } from './execution/local-web-rerun';
@@ -36,6 +38,10 @@ import { PatrolRunStore } from './flutter/patrol-store';
 import { PatrolRunner } from './flutter/patrol-runner';
 import { PatrolRunAnalysisManager } from './flutter/patrol-run-analysis';
 import { PatrolGenerationTerminalManager } from './flutter/patrol-generation-terminal';
+import { CloudUploadQueue } from './test-storage/cloud-upload-queue';
+import { GitWorkspace } from './git/git-workspace';
+import { parseGitTarget, resolveGitTarget } from './git/git-targets';
+import { commonToolDirectories, loginShell, resolveTool } from './setup/environment';
 import { TestStorage } from './test-storage/test-storage';
 import { TestStorageSettingsStore } from './test-storage/test-storage-settings';
 import { TestInstructions } from './test-storage/test-instructions';
@@ -44,6 +50,27 @@ import { startUpdateChecks } from './updates';
 const devUrl = !app.isPackaged && process.env.SAYSPEC_DEV === '1'
   ? 'http://127.0.0.1:5173' : undefined;
 const testMode = process.env.SAYSPEC_TEST_MODE === '1';
+// Git and the GitHub CLI are the user's own; a tool that is missing is looked for again a minute later.
+const gitTools = new Map<string, { at: number; path?: string; found: Promise<string | undefined> }>();
+function gitTool(name: 'git' | 'gh') {
+  // Test runs never reach the real GitHub CLI: they name a stand-in, or have none.
+  if (testMode && name === 'gh') return Promise.resolve(process.env.SAYSPEC_TEST_GH || undefined);
+  const cached = gitTools.get(name);
+  if (cached && (cached.path || Date.now() - cached.at < 60_000)) return cached.found;
+  const found = resolveTool({ name, skipVersion: true, timeoutMs: 10_000 }).then((tool) => {
+    const location = tool.found ? tool.path : undefined;
+    gitTools.set(name, { at: Date.now(), path: location, found: Promise.resolve(location) });
+    return location;
+  });
+  gitTools.set(name, { at: Date.now(), found });
+  return found;
+}
+// Hooks and credential helpers expect the user's login PATH, which an app opened from the Dock does not have.
+let gitPath: Promise<string> | undefined;
+async function gitEnvironment(): Promise<NodeJS.ProcessEnv> {
+  gitPath ??= loginShell('printf %s "$PATH"', { timeoutMs: 10_000 }).then((result) => [...new Set([...(result.code === 0 ? result.stdout.trim().split(':') : []), ...(process.env.PATH ?? '').split(':'), ...commonToolDirectories()].filter(Boolean))].join(':'));
+  return { ...process.env, PATH: await gitPath };
+}
 if (testMode && process.env.SAYSPEC_RECORDING_SMOKE === '1') {
   app.commandLine.appendSwitch('use-fake-device-for-media-stream');
   app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
@@ -75,6 +102,7 @@ let savedWebTests: SavedWebTestStore | undefined;
 let failureAnalysis: FailureAnalysisManager | undefined;
 let managedFixSessions: ManagedTestFixSessionManager | undefined;
 let applicationFixes: ApplicationFixStore | undefined;
+let gitWorkspace: GitWorkspace | undefined;
 let applicationFixSessions: ApplicationFixSessionManager | undefined;
 let codingAgentPreferences: CodingAgentPreferenceManager | undefined;
 let claudeTerminal: ClaudeTerminalManager | undefined;
@@ -292,8 +320,8 @@ async function runNativeSmoke(window: BrowserWindow) {
         const aiChoice = await waitFor(() => document.querySelector('[data-testid="default-ai-select"]')); aiChoice.value = 'codex'; aiChoice.dispatchEvent(new Event('change', { bubbles: true }));
         const aiSelected = Boolean(await waitFor(() => document.querySelector('[data-testid="default-ai-select"]')?.value === 'codex' && document.querySelector('.ai-provider-settings .ai-provider-logo')?.getAttribute('data-provider') === 'codex'));
         const aiSettingsCompact = Boolean(document.querySelector('[data-testid="default-ai-select"]')) && !document.querySelector('[data-testid="ai-provider-settings"] .eyebrow, [data-testid="ai-provider-settings"] .ai-privacy, [data-testid="ai-provider-settings"] .control-help');
-        [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === 'Save project settings')?.click();
-        const sharedSaved = Boolean(await waitFor(() => document.querySelector('.settings-status')?.textContent.includes('Project settings saved')));
+        [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === 'Save base URL')?.click();
+        const sharedSaved = Boolean(await waitFor(() => document.querySelector('.settings-status')?.textContent.includes('Base URL saved')));
         [...document.querySelectorAll('.topbar-actions button')].find((item) => item.textContent.trim() === 'Create project')?.click();
         const projectName = await waitFor(() => document.querySelector('[role="dialog"] #field-project-name')); setInput(projectName, 'Native acceptance project'); setInput(document.querySelector('[role="dialog"] #field-base-url'), 'http://127.0.0.1:3001'); document.querySelector('[role="dialog"] [data-testid="project-create"]')?.click();
         const projectIndexed = Boolean(await waitFor(() => document.querySelector('select[aria-label="Project"]')?.options.length === 3));
@@ -591,7 +619,9 @@ app.whenReady().then(async () => {
   await recordingStore.initialize();
   const testStorageSettings = new TestStorageSettingsStore(path.join(app.getPath('userData'), 'test-storage.json'));
   await testStorageSettings.initialize();
-  testStorage = new TestStorage({ settings: testStorageSettings, localWorkspace, webTests: savedWebTests, patrolTests: patrolRuns, localRoot: path.join(app.getPath('userData'), 'local-tests') });
+  const cloudUploads = new CloudUploadQueue(path.join(app.getPath('userData'), 'cloud-uploads.json'));
+  await cloudUploads.initialize();
+  testStorage = new TestStorage({ settings: testStorageSettings, localWorkspace, webTests: savedWebTests, patrolTests: patrolRuns, cloudUploads, localRoot: path.join(app.getPath('userData'), 'local-tests') });
   testInstructions = new TestInstructions((scope) => testStorage!.instructionsLocation(scope));
   const sendTranscriptionLifecycle = (value: Parameters<NonNullable<ConstructorParameters<typeof LocalModelManager>[0]['onLifecycle']>>[0]) => {
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send('transcription:lifecycle', value);
@@ -612,7 +642,12 @@ app.whenReady().then(async () => {
   applicationFixSessions = new ApplicationFixSessionManager(agentWorkspaces, selectedDirectories, applicationFixes, codingAgents,
     (value) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('application-fix:event', value); });
   managedFixSessions = new ManagedTestFixSessionManager(agentWorkspaces, savedWebTests!, codingAgents,
-    (value) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('managed-fix:event', value); });
+    (value) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('managed-fix:event', value); },
+    patrolRuns ? patrolTestFixSubject(patrolRuns) : undefined);
+  gitWorkspace = new GitWorkspace({ storePath: path.join(app.getPath('userData'), 'git', 'commits.json'), tool: gitTool, environment: gitEnvironment, identity: () => testStorage?.author() ?? null,
+    // Test runs record the page they would open instead of opening a browser.
+    openExternal: async (url) => { if (!/^https:\/\//.test(url)) throw new Error('Only web pages can be opened.'); if (testMode && process.env.SAYSPEC_TEST_OPENED_URLS) await appendFile(process.env.SAYSPEC_TEST_OPENED_URLS, `${url}\n`); else if (!testMode) await shell.openExternal(url); } });
+  await gitWorkspace.initialize();
   rememberedSources = new RememberedSourceStore(path.join(app.getPath('userData'), 'remembered-sources.json'));
   await rememberedSources.initialize();
   entryPoints = new ProjectEntryPointStore(path.join(app.getPath('userData'), 'project-entry-points.json'));
@@ -662,6 +697,7 @@ app.whenReady().then(async () => {
     events: {
       onRunStarted: (runId) => { void patrolRunAnalysis?.discard(runId); },
       onRunFailed: (run, sourcePath) => { void patrolRunAnalysis?.start(run, sourcePath); },
+      onConsole: (value) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('patrol-run:console-event', value); },
     },
   });
   patrolGeneration = new PatrolGenerationTerminalManager({
@@ -817,6 +853,30 @@ app.whenReady().then(async () => {
     const library = value.library as PortableLibrary;
     if (!library || !Array.isArray(library.tests) || !Array.isArray(library.suites) || library.tests.length > 5_000 || library.suites.some((name) => typeof name !== 'string') || library.tests.some((test) => !test || typeof test.id !== 'string' || typeof test.title !== 'string')) throw new Error('The tests to copy are invalid.');
     return storage.import(scope, { ...target, mode: target.mode }, library);
+  });
+  // SaySpec Cloud is reached by the renderer; these move Flutter tests between it and this Mac's store.
+  const cloudScope = (event: Electron.IpcMainInvokeEvent, input: unknown) => {
+    const resolved = libraryScope(event, input);
+    if (!resolved.storage.isCloud(resolved.scope) || resolved.scope.organizationId === 'local') throw new Error('This project does not keep its tests in SaySpec Cloud.');
+    return resolved;
+  };
+  ipcMain.handle('test-storage:cloud-patrol-pending', (event, input: unknown) => {
+    const { storage, scope } = cloudScope(event, input);
+    return storage.pendingCloudPatrolTests(scope);
+  });
+  ipcMain.handle('test-storage:cloud-patrol-uploaded', (event, input: unknown) => {
+    const { storage, value, scope } = cloudScope(event, input);
+    if (typeof value.testId !== 'string' || typeof value.versionId !== 'string') throw new Error('Cloud upload receipt is invalid.');
+    return storage.markCloudPatrolUploaded(scope, value.testId, value.versionId);
+  });
+  ipcMain.handle('test-storage:cloud-patrol-pull', (event, input: unknown) => {
+    const { storage, value, scope } = cloudScope(event, input);
+    const text = (item: unknown, max: number) => typeof item === 'string' && item.length <= max;
+    const versions = value.versions as CloudPatrolTestVersion[];
+    if (!Array.isArray(versions) || versions.length > 5_000 || versions.some((item) => !item || typeof item !== 'object' || !text(item.testId, 128) || !text(item.title, 200) || !text(item.relativePath, 512) || !text(item.source, 512 * 1024) || !/^[a-f0-9]{64}$/.test(String(item.contentHash))
+      || (item.appVersion !== undefined && !text(item.appVersion, 64)) || (item.recordingId !== undefined && !text(item.recordingId, 128)) || (item.provider !== undefined && item.provider !== 'claude-code' && item.provider !== 'codex')
+      || (item.dependencies !== undefined && (typeof item.dependencies !== 'object' || item.dependencies === null || Object.values(item.dependencies).some((version) => !text(version, 64)))))) throw new Error('The tests from SaySpec Cloud are invalid.');
+    return storage.pullCloudPatrolTests(scope, versions);
   });
   ipcMain.handle('test-storage:set-author', (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !testStorage) throw new Error('Test author request is invalid.');
@@ -1180,6 +1240,11 @@ app.whenReady().then(async () => {
     const scope = { organizationId: String(value.organizationId ?? ''), projectId: String(value.projectId ?? ''), runId: String(value.runId ?? '') };
     return patrolRuns.readRunLog(scope, typeof value.attemptId === 'string' ? value.attemptId : undefined);
   });
+  ipcMain.handle('patrol-run:console', (event, input: unknown) => {
+    if (!isTrustedMainFrame(event, rendererUrl) || !patrolRunner || typeof input !== 'object' || input === null) throw new Error('Patrol run console request is invalid.');
+    const value = input as { organizationId?: unknown; projectId?: unknown; runId?: unknown };
+    return patrolRunner.console({ organizationId: String(value.organizationId ?? ''), projectId: String(value.projectId ?? ''), runId: String(value.runId ?? '') });
+  });
   ipcMain.handle('patrol-run-analysis:attach', (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !patrolRunAnalysis || typeof input !== 'object' || input === null) throw new Error('Analysis request is invalid.');
     const value = input as { organizationId?: unknown; projectId?: unknown; runId?: unknown };
@@ -1207,6 +1272,11 @@ app.whenReady().then(async () => {
     if (!isTrustedMainFrame(event, rendererUrl) || !patrolRunAnalysis || typeof input !== 'object' || input === null) throw new Error('Report request is invalid.');
     const value = input as { organizationId?: unknown; projectId?: unknown; runId?: unknown };
     return patrolRunAnalysis.openReport({ organizationId: String(value.organizationId ?? ''), projectId: String(value.projectId ?? ''), runId: String(value.runId ?? '') });
+  });
+  ipcMain.handle('patrol-run-analysis:prepare-fix', (event, input: unknown) => {
+    if (!isTrustedMainFrame(event, rendererUrl) || !patrolRunAnalysis || typeof input !== 'object' || input === null) throw new Error('Fix request is invalid.');
+    const value = input as { organizationId?: unknown; projectId?: unknown; runId?: unknown; issueId?: unknown; testId?: unknown };
+    return patrolRunAnalysis.prepareFix({ organizationId: String(value.organizationId ?? ''), projectId: String(value.projectId ?? ''), runId: String(value.runId ?? ''), issueId: String(value.issueId ?? ''), testId: String(value.testId ?? '') });
   });
   ipcMain.handle('patrol:artifact', (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !patrolRuns || typeof input !== 'object' || input === null) throw new Error('Patrol artifact request is invalid.');
@@ -1525,6 +1595,21 @@ app.whenReady().then(async () => {
     await authorizeApplicationFixScope(value);
     return applicationFixes.receipt(value) ?? null;
   });
+  const gitRequest = async (event: Electron.IpcMainInvokeEvent, input: unknown) => {
+    if (!isTrustedMainFrame(event, rendererUrl) || !gitWorkspace || !input || typeof input !== 'object') throw new Error('Git request is invalid.');
+    const value = input as Record<string, unknown>;
+    const target = parseGitTarget(value.target);
+    return { value, workspace: gitWorkspace, spec: await resolveGitTarget(target, { applicationFixes, handles: selectedDirectories, testStorage }) };
+  };
+  ipcMain.handle('git:view', async (event, input: unknown) => { const { workspace, spec } = await gitRequest(event, input); return workspace.view(spec); });
+  ipcMain.handle('git:commit', async (event, input: unknown) => {
+    const { value, workspace, spec } = await gitRequest(event, input);
+    const branch = value.branch as { kind?: unknown; name?: unknown } | undefined;
+    if (!branch || (branch.kind !== 'current' && (branch.kind !== 'new' || typeof branch.name !== 'string'))) throw new Error('Git request is invalid.');
+    return workspace.commit(spec, { paths: value.paths as string[], message: value.message as string, branch: branch.kind === 'new' ? { kind: 'new', name: branch.name as string } : { kind: 'current' } });
+  });
+  ipcMain.handle('git:push', async (event, input: unknown) => { const { value, workspace, spec } = await gitRequest(event, input); return workspace.push(spec, String(value.commitId ?? '')); });
+  ipcMain.handle('git:pull-request', async (event, input: unknown) => { const { value, workspace, spec } = await gitRequest(event, input); return workspace.pullRequest(spec, String(value.commitId ?? '')); });
   ipcMain.handle('application-fix:rerun', async (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !applicationFixes || !savedWebTests || !patrolRuns || !patrolRunner || !input || typeof input !== 'object') throw new Error('Application fix rerun is invalid.');
     const value = input as { organizationId: string; projectId: string; testId: string; proposalId: string; target: 'web' | 'flutter'; sourceHandle: string; deviceId?: string; idToken?: string };
@@ -1549,6 +1634,49 @@ app.whenReady().then(async () => {
       const baseUrl = new URL(`${prior.pathname}${prior.search}${prior.hash}`, server.baseUrl).href;
       return await savedWebTests.run({ organizationId: value.organizationId, projectId: value.projectId, testId: value.testId, versionId: proposal.testVersionId, baseUrl }, { ...link, runtimeKind: 'local-web-server', runtimeHash: server.runtimeHash }, server.verify);
     } finally { await server.close(); }
+  });
+  /**
+   * Patrol test fixes. Tests on this Mac (a guest project, or file storage)
+   * are authorized here, as their other edits are. In a SaySpec Cloud project
+   * the backend confirms membership and access to this Flutter project; the
+   * new version itself reaches the cloud through the regular upload, which
+   * the project's access rules govern.
+   */
+  const authorizePatrolTestFixScope = async (input: { organizationId: string; projectId: string; testId?: string; idToken?: string }) => {
+    if (testStorage?.isCloud(input)) return callManagedFixBackend('applicationFixReadAuthorize', input.idToken, { organizationId: input.organizationId, projectId: input.projectId, target: 'flutter' });
+    if (input.organizationId === 'local' && !localWorkspace?.snapshot().projects.some((project) => project.id === input.projectId && project.targetType === 'flutter')) throw new Error('The selected local Flutter project is unavailable.');
+    if (input.testId && !(testStorage?.usesFiles(input) ? await testStorage.has(input, input.testId) : patrolRuns?.listTests(input.projectId, input.organizationId).some((test) => test.id === input.testId))) throw new Error('This test is not in the project’s test storage.');
+    return input.organizationId === 'local' ? 'guest' : 'local_user';
+  };
+  ipcMain.handle('patrol-test-fix:list', async (event, input: unknown) => {
+    if (!isTrustedMainFrame(event, rendererUrl) || !patrolRuns || !input || typeof input !== 'object') throw new Error('Fix proposal query is invalid.');
+    const value = input as { organizationId: string; projectId: string; idToken?: string };
+    await authorizePatrolTestFixScope(value);
+    return patrolRuns.testFixProposals(value);
+  });
+  ipcMain.handle('patrol-test-fix:start', async (event, input: unknown) => {
+    if (!isTrustedMainFrame(event, rendererUrl) || !managedFixSessions || !codingAgentPreferences || !input || typeof input !== 'object') throw new Error('Fix session request is invalid.');
+    const value = input as { organizationId: string; projectId: string; testId: string; attemptId: string; analysisId: string; sourceHandle?: string; cols: number; rows: number; idToken?: string };
+    const provider = codingAgentPreferences.snapshot().provider;
+    if (!provider) throw new Error('Choose Claude Code or Codex in Settings first.');
+    await authorizePatrolTestFixScope(value);
+    const readDirectory = typeof value.sourceHandle === 'string' && value.sourceHandle ? selectedDirectories.root(value.sourceHandle) : undefined;
+    return managedFixSessions.start(value, provider, value.cols, value.rows, { kind: 'patrol', readDirectory });
+  });
+  ipcMain.handle('patrol-test-fix:decide', async (event, input: unknown) => {
+    if (!isTrustedMainFrame(event, rendererUrl) || !patrolRuns || !input || typeof input !== 'object') throw new Error('Fix decision is invalid.');
+    const value = input as { organizationId: string; projectId: string; testId: string; proposalId: string; kind: 'approve' | 'reject'; idToken?: string };
+    if (value.kind !== 'approve' && value.kind !== 'reject') throw new Error('Fix decision is invalid.');
+    const actorUid = await authorizePatrolTestFixScope(value);
+    return patrolRuns.decideTestFix({ ...value, actorUid });
+  });
+  ipcMain.handle('patrol-test-fix:apply', async (event, input: unknown) => {
+    if (!isTrustedMainFrame(event, rendererUrl) || !patrolRuns || !input || typeof input !== 'object') throw new Error('Fix application is invalid.');
+    const value = input as { organizationId: string; projectId: string; testId: string; proposalId: string; idToken?: string };
+    const actorUid = await authorizePatrolTestFixScope(value);
+    const version = await patrolRuns.applyTestFix({ ...value, actorUid });
+    await testStorage?.savePatrolVersion(version);
+    return version;
   });
   ipcMain.handle('saved-web-test:read-artifact', (event, input: unknown) => {
     if (!isTrustedMainFrame(event, rendererUrl) || !savedWebTests || typeof input !== 'object' || input === null) throw new Error('Saved test artifact request is invalid.');
@@ -1653,7 +1781,7 @@ app.on('before-quit', (event) => {
   ipcMain.removeHandler('machine:choose-source');
   ipcMain.removeHandler('machine:check-readiness');
   for (const channel of ['flutter:narration-begin', 'flutter:narration-append', 'flutter:narration-finish', 'flutter:narration-read', 'flutter:transcribe', 'flutter:share-state']) ipcMain.removeHandler(channel);
-  for (const channel of ['flutter:devices', 'flutter:start-device', 'flutter:recorder-sdk', 'flutter:preview-integration', 'flutter:apply-integration', 'flutter:capture-start', 'flutter:capture-pause', 'flutter:capture-resume', 'flutter:capture-stop', 'flutter:capture-cancel', 'flutter:capture-list', 'flutter:capture-get', 'flutter:capture-screenshot', 'patrol:list-tests', 'patrol:list-versions', 'patrol:run', 'patrol:cancel', 'patrol:attempts', 'patrol:artifact', 'patrol:leases', 'patrol-run:create', 'patrol-run:start', 'patrol-run:list', 'patrol-run:stop', 'patrol-run:delete', 'patrol-run:log', 'patrol-run-analysis:attach', 'patrol-run-analysis:write', 'patrol-run-analysis:resize', 'patrol-run-analysis:restart', 'patrol-run-analysis:open-report', 'patrol-generation:start', 'patrol-generation:write', 'patrol-generation:resize', 'patrol-generation:close', 'machine-setup:get', 'machine-setup:check', 'machine-setup:plan', 'machine-setup:install', 'machine-setup:job', 'machine-setup:cancel', 'machine-setup-agent:start', 'machine-setup-agent:write', 'machine-setup-agent:resize', 'machine-setup-agent:close', 'entry-points:get', 'entry-points:save', 'recording:microphone-access', 'recording:start-web', 'recording:begin-segment', 'recording:append-audio', 'recording:pause', 'recording:resume', 'recording:stop', 'recording:interrupt', 'recording:cancel', 'recording:list', 'recording:get', 'recording:read-asset', 'recording:share-state', 'transcription:setup', 'transcription:model-install', 'transcription:model-cancel', 'transcription:model-remove', 'transcription:start', 'transcription:cancel', 'transcription:save-edits', 'transcription:save-intent', 'generation:readiness', 'generation:preference-get', 'generation:preference-select', 'generation:start', 'generation:cancel', 'saved-web-test:versions', 'saved-web-test:project-versions', 'saved-web-test:attempts', 'saved-web-test:read-artifact', 'saved-web-test:run', 'saved-web-run:create', 'saved-web-run:start', 'saved-web-run:list', 'saved-web-run:retry', 'saved-web-run:cancel', 'saved-web-test:cancel', 'failure-analysis:list', 'failure-analysis:start', 'failure-analysis:cancel', 'managed-fix:list', 'managed-fix:start', 'managed-fix:write', 'managed-fix:resize', 'managed-fix:close', 'managed-fix:decide', 'managed-fix:apply', 'application-fix:list', 'application-fix:start', 'application-fix:write', 'application-fix:resize', 'application-fix:close', 'application-fix:decide', 'application-fix:apply', 'application-fix:receipt', 'application-fix:rerun', 'saved-web-test:export', 'saved-web-test:preview-import', 'saved-web-test:import', 'claude-terminal:start', 'claude-terminal:write', 'claude-terminal:resize', 'claude-terminal:close']) ipcMain.removeHandler(channel);
+  for (const channel of ['flutter:devices', 'flutter:start-device', 'flutter:recorder-sdk', 'flutter:preview-integration', 'flutter:apply-integration', 'flutter:capture-start', 'flutter:capture-pause', 'flutter:capture-resume', 'flutter:capture-stop', 'flutter:capture-cancel', 'flutter:capture-list', 'flutter:capture-get', 'flutter:capture-screenshot', 'patrol:list-tests', 'patrol:list-versions', 'patrol:run', 'patrol:cancel', 'patrol:attempts', 'patrol:artifact', 'patrol:leases', 'patrol-run:create', 'patrol-run:start', 'patrol-run:list', 'patrol-run:stop', 'patrol-run:delete', 'patrol-run:log', 'patrol-run:console', 'patrol-run-analysis:attach', 'patrol-run-analysis:write', 'patrol-run-analysis:resize', 'patrol-run-analysis:restart', 'patrol-run-analysis:open-report', 'patrol-run-analysis:prepare-fix', 'patrol-test-fix:list', 'patrol-test-fix:start', 'patrol-test-fix:decide', 'patrol-test-fix:apply', 'patrol-generation:start', 'patrol-generation:write', 'patrol-generation:resize', 'patrol-generation:close', 'machine-setup:get', 'machine-setup:check', 'machine-setup:plan', 'machine-setup:install', 'machine-setup:job', 'machine-setup:cancel', 'machine-setup-agent:start', 'machine-setup-agent:write', 'machine-setup-agent:resize', 'machine-setup-agent:close', 'entry-points:get', 'entry-points:save', 'recording:microphone-access', 'recording:start-web', 'recording:begin-segment', 'recording:append-audio', 'recording:pause', 'recording:resume', 'recording:stop', 'recording:interrupt', 'recording:cancel', 'recording:list', 'recording:get', 'recording:read-asset', 'recording:share-state', 'transcription:setup', 'transcription:model-install', 'transcription:model-cancel', 'transcription:model-remove', 'transcription:start', 'transcription:cancel', 'transcription:save-edits', 'transcription:save-intent', 'generation:readiness', 'generation:preference-get', 'generation:preference-select', 'generation:start', 'generation:cancel', 'saved-web-test:versions', 'saved-web-test:project-versions', 'saved-web-test:attempts', 'saved-web-test:read-artifact', 'saved-web-test:run', 'saved-web-run:create', 'saved-web-run:start', 'saved-web-run:list', 'saved-web-run:retry', 'saved-web-run:cancel', 'saved-web-test:cancel', 'failure-analysis:list', 'failure-analysis:start', 'failure-analysis:cancel', 'managed-fix:list', 'managed-fix:start', 'managed-fix:write', 'managed-fix:resize', 'managed-fix:close', 'managed-fix:decide', 'managed-fix:apply', 'application-fix:list', 'application-fix:start', 'application-fix:write', 'application-fix:resize', 'application-fix:close', 'application-fix:decide', 'application-fix:apply', 'application-fix:receipt', 'application-fix:rerun', 'git:view', 'git:commit', 'git:push', 'git:pull-request', 'saved-web-test:export', 'saved-web-test:preview-import', 'saved-web-test:import', 'claude-terminal:start', 'claude-terminal:write', 'claude-terminal:resize', 'claude-terminal:close']) ipcMain.removeHandler(channel);
   session.defaultSession?.setPermissionRequestHandler(null);
   session.defaultSession?.setPermissionCheckHandler(null);
   selectedDirectories.clear();

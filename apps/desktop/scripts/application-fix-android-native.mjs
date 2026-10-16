@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
 import electronBinary from 'electron';
@@ -9,11 +9,19 @@ import { FlutterCaptureStore } from '../electron/flutter/capture-store.ts';
 import { FlutterCaptureSessionManager } from '../electron/flutter/session-manager.ts';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Local-only builds open the local workspace directly; builds with a cloud backend first offer "Continue as guest". */
+async function enterLocalWorkspace(page) {
+  const guest = page.getByTestId('continue-guest');
+  await guest.or(page.getByTestId('local-project-gate')).or(page.locator('nav')).first().waitFor();
+  if (await guest.isVisible()) await guest.click();
+}
 const desktop = new URL('..', import.meta.url).pathname;
 const sourcePath = new URL('../../../fixtures/flutter_sample_app', import.meta.url).pathname.replace(/\/$/, '');
 const root = await mkdtemp('/private/tmp/sayspec-app-fix-android-');
 const profile = path.join(root, 'profile'); const cli = path.join(root, 'fixture-claude.mjs');
 const catalogPath = path.join(sourcePath, 'lib/catalog.dart'); const originalCatalog = await readFile(catalogPath, 'utf8');
+// patrol_cli regenerates the bundle for the tests it runs; it is put back afterwards.
+const bundlePath = path.join(sourcePath, 'patrol_test/test_bundle.dart'); const originalBundle = await readFile(bundlePath, 'utf8');
 const relativePath = 'patrol_test/sayspec_application_fix_test.dart';
 const testSource = `// SAYSPEC_GENERATED
 import 'package:flutter/material.dart';
@@ -35,13 +43,6 @@ void main() { patrolTest('receipt total is twelve dollars', (\$) async {
 await writeFile(cli, `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-
-/** Local-only builds open the local workspace directly; builds with a cloud backend first offer "Continue as guest". */
-async function enterLocalWorkspace(page) {
-  const guest = page.getByTestId('continue-guest');
-  await guest.or(page.getByTestId('local-project-gate')).or(page.locator('nav')).first().waitFor();
-  if (await guest.isVisible()) await guest.click();
-}
 const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('claude 2.1.269'); process.exit(0); }
 if (args[0] === 'auth') { console.log('{"loggedIn":true}'); process.exit(0); }
@@ -87,20 +88,34 @@ try {
   assert.equal(validation.state, 'passed', `${validation.summary} ${validation.detail}`);
   const saved = await store.saveTest({ organizationId: 'local', projectId, title: 'Receipt total', relativePath, source: testSource, validationAttemptId: validation.id, validatedRuntime: validation.runtime, dependencies: { patrol: '4.10.0' }, state: 'published' });
   console.log('M11_ANDROID_STAGE=validation-passed'); await writeFile(catalogPath, originalCatalog.replace('priceCents: 1200', 'priceCents: 700'));
-  const failed = await runner.run({ organizationId: 'local', projectId, testId: saved.id, versionId: saved.versionId, deviceId: device.id }, sourcePath);
-  assert.equal(failed.state, 'failed', `${failed.summary} ${failed.detail}`);
-  console.log('M11_ANDROID_STAGE=defect-failed'); await store.saveFailureAnalysis({ schemaVersion: 1, id: 'analysis_android_application_fixture', organizationId: 'local', projectId, testId: saved.id, attemptId: failed.id, versionId: saved.versionId, testVersionHash: saved.contentHash, inputHash: 'b'.repeat(64), createdAt: new Date().toISOString(), status: 'complete', provider: 'claude-code', expected: 'Total paid $12.00', actual: 'Total paid $7.00', category: 'application', explanation: 'The fixture catalog price changed to $7 while the saved receipt assertion expects $12.', limitations: 'Deterministic fixture diagnosis tied to a real Android Patrol failure.', nextStep: 'Review the catalog price source.', evidenceIds: ['e01'], evidence: [{ id: 'e01', kind: 'framework', label: 'Failed Patrol assertion', text: failed.summary + ' ' + failed.detail.slice(0, 1500) }] });
+  const run = await store.createRun({ organizationId: 'local', projectId, testIds: [saved.id], name: 'Application fix fixture run' });
+  await runner.startRun({ organizationId: 'local', projectId, runId: run.id, deviceId: device.id }, sourcePath);
+  for (let i = 0; i < 900 && store.run({ organizationId: 'local', projectId, runId: run.id }).state === 'running'; i++) await sleep(2000);
+  const failed = store.runs(projectId, 'local').attempts.find((item) => item.runId === run.id && item.testId === saved.id);
+  assert.equal(failed?.state, 'failed', `${failed?.summary} ${failed?.detail}`);
+  console.log('M11_ANDROID_STAGE=defect-failed');
+  // Stands in for the analysis agent: its analysis.json and report, which SaySpec reads into the run's issues when it starts.
+  const analysisDirectory = path.join(profile, 'patrol-run-analysis', run.id);
+  await mkdir(analysisDirectory, { recursive: true });
+  await writeFile(path.join(analysisDirectory, 'analysis.json'), JSON.stringify({ schema: 1, issues: [{ id: 'i1', tests: ['Receipt total'], testFile: relativePath, verdict: 'app-bug', summary: 'The catalog price of the first item changed to $7, so the receipt shows the wrong total.', expected: 'Total paid $12.00', actual: 'Total paid $7.00', evidence: [failed.tests.flatMap((test) => test.errors).join(' ').slice(0, 500) || failed.summary], nextStep: 'Restore the price in lib/catalog.dart.' }] }));
+  await writeFile(path.join(analysisDirectory, 'report.html'), '<!doctype html><title>Fixture report</title><p>Deterministic fixture report.</p>');
+  await store.updateRun(run.id, { analysis: { state: 'ready', provider: 'claude-code', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() } });
   await runner.shutdown(); runner = undefined; await sessions.shutdown(); sessions = undefined;
   console.log('M11_ANDROID_STAGE=review-ui'); instance = await launch(); ({ app, page } = instance); await enterLocalWorkspace(page);
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
-  await page.getByRole('list', { name: 'Patrol attempts' }).getByRole('listitem').filter({ hasText: 'failed' }).click();
-  await page.getByRole('button', { name: 'Propose application fix' }).click();
-  await page.getByRole('button', { name: 'Choose source folder' }).click();
+  const fixApp = page.getByRole('button', { name: 'Fix app with Claude' });
+  await fixApp.waitFor();
+  assert.match(await page.locator('.patrol-run-issue').innerText(), /App bug[\s\S]*catalog price/);
+  const chooseSource = page.getByRole('button', { name: 'Choose source folder' });
+  if (await chooseSource.isVisible()) await chooseSource.click();
+  for (let i = 0; i < 60 && !(await fixApp.isEnabled()); i++) await sleep(500);
+  await fixApp.click();
   try { await page.getByRole('button', { name: 'Approve exact application patch' }).waitFor({ timeout: 45_000 }); } catch (error) { console.error('ANDROID_FIX_UI_DEBUG', (await page.locator('body').innerText()).slice(-4000)); throw error; }
   assert.equal(await readFile(catalogPath, 'utf8'), originalCatalog.replace('priceCents: 1200', 'priceCents: 700'));
   await page.getByRole('button', { name: 'Approve exact application patch' }).click();
   await page.getByRole('button', { name: 'Apply approved patch' }).click();
-  console.log('M11_ANDROID_STAGE=patch-applied'); await page.getByRole('button', { name: 'Rerun unchanged saved test on patched application' }).click();
+  console.log('M11_ANDROID_STAGE=patch-applied'); await page.getByLabel('Ready device').selectOption(device.id);
+  await page.getByRole('button', { name: 'Rerun unchanged saved test on patched application' }).click();
   await page.getByText('Before:', { exact: false }).waitFor({ timeout: 900_000 });
   const attempts = await page.evaluate(async ({ projectId, testId }) => window.sayspec.listPatrolAttempts({ organizationId: 'local', projectId, testId }), { projectId, testId: saved.id });
   const after = attempts.at(-1);
@@ -110,7 +125,10 @@ try {
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
   const reopened = await page.evaluate(async ({ projectId, testId }) => window.sayspec.listPatrolAttempts({ organizationId: 'local', projectId, testId }), { projectId, testId: saved.id });
   assert.deepEqual(reopened.map((item) => item.state).slice(-2), ['failed', 'passed']);
-  assert.match(await page.getByRole('list', { name: 'Patrol attempts' }).innerText(), /failed/i);
-  assert.match(await page.getByRole('list', { name: 'Patrol attempts' }).innerText(), /passed/i);
+  // The run keeps its original failure and the issue it was fixed from.
+  await page.locator('.patrol-run-issue').filter({ hasText: 'App bug' }).waitFor();
+  assert.match(await page.locator('.patrol-run-summary').innerText(), /1\s*failed/);
+  await page.getByRole('button', { name: 'Fixes', exact: true }).click();
+  await page.getByText('Applied receipt', { exact: false }).waitFor();
   console.log(`M11_ANDROID_APPLICATION_FIX=${JSON.stringify({ emulator: device.name, validation: validation.state, before: failed.state, after: after.state, sourceHash: saved.contentHash, versionUnchanged: after.versionId === saved.versionId, receiptId: after.applicationPatch.receiptId, buildArtifactHash: after.applicationPatch.buildArtifactHash, restarted: true, provider: 'deterministic-pty-fixture' })}`);
-} finally { await writeFile(catalogPath, originalCatalog).catch(() => undefined); await rm(path.join(sourcePath, relativePath), { force: true }).catch(() => undefined); await rm(path.join(sourcePath, 'lib', 'unauthorized-probe.txt'), { force: true }).catch(() => undefined); await runner?.shutdown().catch(() => undefined); await sessions?.shutdown().catch(() => undefined); try { await instance?.app.close(); } catch { /* closed */ } await rm(root, { recursive: true, force: true }); }
+} finally { await writeFile(catalogPath, originalCatalog).catch(() => undefined); await writeFile(bundlePath, originalBundle).catch(() => undefined); await rm(path.join(sourcePath, relativePath), { force: true }).catch(() => undefined); await rm(path.join(sourcePath, 'lib', 'unauthorized-probe.txt'), { force: true }).catch(() => undefined); await runner?.shutdown().catch(() => undefined); await sessions?.shutdown().catch(() => undefined); try { await instance?.app.close(); } catch { /* closed */ } await rm(root, { recursive: true, force: true }); }

@@ -11,7 +11,8 @@ export function proposalContentHash(proposal: Pick<ManagedTestFixProposal, 'scop
   return sha(canonical({ scope, attemptId, analysisId, baseVersionId, baseContentHash, fileChanges, rationale, assertionImpact }));
 }
 
-function changedLines(base: string, proposed: string, relativePath: string) {
+/** A one-hunk unified diff of a whole-file replacement. */
+export function changedLines(base: string, proposed: string, relativePath: string) {
   const before = base.split('\n'); const after = proposed.split('\n');
   let prefix = 0; while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
   let suffix = 0; while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;

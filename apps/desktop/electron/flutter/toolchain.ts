@@ -100,3 +100,10 @@ export async function resolveProjectFlutterToolchain(sourcePath: string): Promis
 }
 
 export async function readProjectFlutterPin(sourcePath: string) { return projectPin(sourcePath); }
+
+/** The app's own version from pubspec.yaml (for example 2.4.0+57), or undefined when it declares none. */
+export async function readPubspecVersion(sourcePath: string) {
+  const pubspec = await readFile(path.join(sourcePath, 'pubspec.yaml'), 'utf8').catch(() => '');
+  const version = /^version:[ \t]*["']?([^\s"'#]+)/m.exec(pubspec)?.[1];
+  return version && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(version) ? version : undefined;
+}

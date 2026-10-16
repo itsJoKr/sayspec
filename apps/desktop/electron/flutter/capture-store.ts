@@ -70,7 +70,7 @@ export class FlutterCaptureStore {
     return this.list(projectId).at(-1);
   }
 
-  async create(input: { organizationId?: string; projectId: string; sessionId?: string; sessionTitle?: string; title: string; deviceId: string; deviceName: string; platform: 'android' | 'ios'; appId: string; entryPoint?: { name: string; command: string }; recorderSdkVersion: string; recorderSchemaVersion: number }): Promise<CaptureDraft> {
+  async create(input: { organizationId?: string; projectId: string; sessionId?: string; sessionTitle?: string; title: string; deviceId: string; deviceName: string; platform: 'android' | 'ios'; appId: string; entryPoint?: { name: string; command: string }; appVersion?: string; recorderSdkVersion: string; recorderSchemaVersion: number }): Promise<CaptureDraft> {
     const id = `flutter_capture_${randomUUID()}`;
     const draft: CaptureDraft = {
       schemaVersion: 1,
@@ -89,6 +89,7 @@ export class FlutterCaptureStore {
       platform: input.platform,
       appId: input.appId,
       ...(input.entryPoint ? { entryPoint: { name: input.entryPoint.name.slice(0, 80), command: input.entryPoint.command.slice(0, 600) } } : {}),
+      ...(input.appVersion ? { appVersion: input.appVersion } : {}),
       recorderSdkVersion: input.recorderSdkVersion,
       recorderSchemaVersion: input.recorderSchemaVersion,
       completenessWarnings: [],

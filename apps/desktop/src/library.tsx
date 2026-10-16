@@ -6,6 +6,7 @@ import { testAuthorLabel, type CurrentAuthor } from './test-author';
 import { useTestRepository, type RepositorySource, type TestRepository } from './test-repository';
 import { Button, Field, StatePanel, TopbarActions } from './ui';
 import { ReviewPanel } from './review-panel';
+import { GitChangesBar } from './git-changes';
 
 function messageOf(reason: unknown, fallback: string) { return reason instanceof Error ? reason.message.replace(/^(Firebase)?Error:\s*/, '') : fallback; }
 // "Just Recorded" suites only stage fresh recordings: tests move out of them, never in, and they vanish once empty.
@@ -77,19 +78,29 @@ function SuiteList({ tests, suites, selectedIds, canManage, onToggleTest, onTogg
 function SuiteDialog({ mode, suite, open, busy, error, onOpenChange, onSubmit }: { mode: 'create' | 'rename'; suite?: TestSuite; open: boolean; busy: boolean; error: string; onOpenChange: (open: boolean) => void; onSubmit: (name: string) => void }) {
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); onSubmit(String(new FormData(event.currentTarget).get('name') ?? '').trim()); }
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content" aria-describedby="suite-dialog-description">
-    <Dialog.Title>{mode === 'create' ? 'Create suite' : 'Rename suite'}</Dialog.Title><Dialog.Description id="suite-dialog-description" className={mode === 'rename' ? 'sr-only' : undefined}>{mode === 'create' ? 'Create a place for related tests. Move tests into it from their row menus.' : 'Give this suite a clear name.'}</Dialog.Description>
+    <Dialog.Title>{mode === 'create' ? 'Create suite' : 'Rename suite'}</Dialog.Title><Dialog.Description id="suite-dialog-description" className={mode === 'rename' ? 'sr-only' : undefined}>{mode === 'create' ? 'Create a place for related tests. Move tests into it by selecting them, or from their row menus.' : 'Give this suite a clear name.'}</Dialog.Description>
     <form className="rename-form" onSubmit={submit}><Field name="name" label="Suite name" defaultValue={suite?.name ?? ''} placeholder="e.g. Checkout flows" autoFocus required />{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><Dialog.Close asChild><Button type="button">Cancel</Button></Dialog.Close><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Saving…' : mode === 'create' ? 'Create suite' : 'Save name'}</Button></div></form>
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function MoveTestDialog({ title, currentSuiteId, suites, open, busy, error, onOpenChange, onCreateSuite, onSubmit }: { title: string; currentSuiteId: string | null; suites: TestSuite[]; open: boolean; busy: boolean; error: string; onOpenChange: (open: boolean) => void; onCreateSuite: () => void; onSubmit: (targetSuiteId: string | null) => void }) {
+const NEW_SUITE = 'new-suite';
+const UNASSIGNED = '';
+type MoveDestination = { suiteId: string | null } | { newSuiteName: string };
+
+/** Moves one test, or every selected one, into an existing suite, out of all suites, or into a suite named here. */
+function MoveTestsDialog({ title, count, currentSuiteId, createdSuiteId, suites, busy, error, onOpenChange, onSubmit }: { title?: string; count: number; currentSuiteId: string | null | undefined; createdSuiteId?: string; suites: TestSuite[]; busy: boolean; error: string; onOpenChange: (open: boolean) => void; onSubmit: (destination: MoveDestination) => void }) {
+  // `currentSuiteId` is undefined when the tests come from different places, so every destination stays on offer.
   const choices = suites.filter((suite) => suite.id !== currentSuiteId && !isJustRecordedSuite(suite));
-  const [target, setTarget] = useState(choices[0]?.id ?? '');
-  useEffect(() => { if (open) setTarget(choices[0]?.id ?? ''); }, [open, currentSuiteId, suites]);
-  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); onSubmit(target || null); }
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content" aria-describedby="move-dialog-description">
-    <Dialog.Title>Move test</Dialog.Title><Dialog.Description id="move-dialog-description">Choose where “{title}” should live.</Dialog.Description>
-    {choices.length ? <form className="rename-form" onSubmit={submit}><label className="select-field">Suite<select value={target} onChange={(event) => setTarget(event.target.value)}><option value="">Unassigned</option>{choices.map((suite) => <option key={suite.id} value={suite.id}>{suite.name}</option>)}</select></label>{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><Dialog.Close asChild><Button type="button">Cancel</Button></Dialog.Close><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Moving…' : 'Move test'}</Button></div></form> : <div className="dialog-empty"><p>No other suites exist yet.</p><Button variant="primary" onClick={onCreateSuite}>Create a suite</Button></div>}
+  const options = [...choices.map((suite) => suite.id), ...(currentSuiteId === null ? [] : [UNASSIGNED]), NEW_SUITE];
+  const [target, setTarget] = useState(options[0]);
+  // A new suite that was created before a move failed is where a retry should go.
+  useEffect(() => { if (createdSuiteId) setTarget(createdSuiteId); }, [createdSuiteId]);
+  const selected = options.includes(target) ? target : options[0];
+  const label = count === 1 ? 'Move test' : `Move ${count} tests`;
+  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); onSubmit(selected === NEW_SUITE ? { newSuiteName: String(new FormData(event.currentTarget).get('name') ?? '').trim() } : { suiteId: selected || null }); }
+  return <Dialog.Root open onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content" aria-describedby="move-dialog-description">
+    <Dialog.Title>{label}</Dialog.Title><Dialog.Description id="move-dialog-description">{title ? <>Choose where “{title}” should live.</> : count === 1 ? 'Choose where the selected test should live.' : <>Choose where the {count} selected tests should live.</>}</Dialog.Description>
+    <form className="rename-form" onSubmit={submit}><label className="select-field">Suite<select value={selected} onChange={(event) => setTarget(event.target.value)}>{choices.map((suite) => <option key={suite.id} value={suite.id}>{suite.name}</option>)}{currentSuiteId !== null && <option value={UNASSIGNED}>Unassigned</option>}<option value={NEW_SUITE}>New suite…</option></select></label>{selected === NEW_SUITE && <Field name="name" label="New suite name" placeholder="e.g. Checkout flows" autoFocus required />}{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><Dialog.Close asChild><Button type="button">Cancel</Button></Dialog.Close><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Moving…' : label}</Button></div></form>
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
@@ -101,12 +112,17 @@ function CreateRunDialog({ open, selectedCount, busy, baseUrlBusy, baseUrl, erro
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function LibraryHeader({ selectedCount, canCreateRun = true, onCreateRun, onCreateSuite }: { selectedCount: number; canCreateRun?: boolean; onCreateRun: () => void; onCreateSuite: () => void }) {
-  return <div className="library-header"><div><p>Keep related tests together in suites. Select tests to build a run, or select a suite to pick everything inside it.</p></div><div className="library-header__actions"><Button variant="secondary" onClick={onCreateSuite}>New suite</Button></div>
-    {canCreateRun && selectedCount > 0 && <TopbarActions><Button data-testid="create-test-run" variant="primary" onClick={onCreateRun}>Create Test Run <span className="button-count">({selectedCount})</span></Button></TopbarActions>}</div>;
+function LibraryHeader({ selectedCount, canCreateRun = true, canMove, onCreateRun, onMove, onCreateSuite }: { selectedCount: number; canCreateRun?: boolean; canMove: boolean; onCreateRun: () => void; onMove: () => void; onCreateSuite: () => void }) {
+  return <div className="library-header"><div><p>Keep related tests together in suites. Select tests to build a run or move them to a suite, or select a suite to pick everything inside it.</p></div><div className="library-header__actions"><Button variant="secondary" onClick={onCreateSuite}>New suite</Button></div>
+    {selectedCount > 0 && (canMove || canCreateRun) && <TopbarActions>{canMove && <Button data-testid="move-selected-tests" variant="secondary" onClick={onMove}>Move to suite <span className="button-count">({selectedCount})</span></Button>}{canCreateRun && <Button data-testid="create-test-run" variant="primary" onClick={onCreateRun}>Create Test Run <span className="button-count">({selectedCount})</span></Button>}</TopbarActions>}</div>;
 }
 
 function suiteForTest(testId: string, suites: TestSuite[]) { return suites.find((suite) => suite.testIds.includes(testId))?.id ?? null; }
+/** The suite all of these tests share (`null` when all are unassigned), or undefined when they are spread out. */
+function sharedSuite(testIds: string[], suites: TestSuite[]) {
+  const homes = new Set(testIds.map((id) => suiteForTest(id, suites)));
+  return homes.size === 1 ? [...homes][0] : undefined;
+}
 
 function RenameDialog({ title, open, onOpenChange, onSubmit, error }: { title: string; open: boolean; onOpenChange: (open: boolean) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; error: string }) {
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content" aria-describedby="rename-description">
@@ -122,17 +138,28 @@ function RenameDialog({ title, open, onOpenChange, onSubmit, error }: { title: s
  */
 export function TestLibrary({ repository, reviewScope, currentUser, canManage, canCreateRun = true, defaultBaseUrl = '', resolveRunBaseUrl, onRecord, onCreateRun, onCreateDeviceRun }: { repository: TestRepository; reviewScope: { organizationId: string; projectId: string }; currentUser?: CurrentAuthor; canManage: boolean; canCreateRun?: boolean; defaultBaseUrl?: string; resolveRunBaseUrl: ResolveRunBaseUrl; onRecord: () => void; onCreateRun: CreateRunHandler; onCreateDeviceRun?: DeviceRunHandler }) {
   const { tests, suites } = repository;
-  const [renameId, setRenameId] = useState<string | null>(null); const [moveId, setMoveId] = useState<string | null>(null); const [reviewId, setReviewId] = useState<string | null>(null); const [actionError, setActionError] = useState(''); const [dialogError, setDialogError] = useState(''); const [busy, setBusy] = useState(false); const [suiteDialog, setSuiteDialog] = useState<{ mode: 'create' | 'rename'; suite?: TestSuite } | null>(null); const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set()); const [createRunOpen, setCreateRunOpen] = useState(false); const [createRunBusy, setCreateRunBusy] = useState(false); const [createRunBaseUrlBusy, setCreateRunBaseUrlBusy] = useState(false); const [createRunBaseUrl, setCreateRunBaseUrl] = useState(defaultBaseUrl); const [createRunError, setCreateRunError] = useState('');
-  useEffect(() => { setRenameId(null); setMoveId(null); setSelectedIds(new Set()); }, [reviewScope.organizationId, reviewScope.projectId, repository.kind]);
-  const renameTarget = tests.find((test) => test.id === renameId); const moveTarget = tests.find((test) => test.id === moveId); const reviewTarget = repository.supportsReview ? tests.find((test) => test.id === reviewId) : undefined;
+  const [renameId, setRenameId] = useState<string | null>(null); const [move, setMove] = useState<{ testIds: string[]; fromSelection: boolean; createdSuiteId?: string } | null>(null); const [reviewId, setReviewId] = useState<string | null>(null); const [actionError, setActionError] = useState(''); const [dialogError, setDialogError] = useState(''); const [busy, setBusy] = useState(false); const [suiteDialog, setSuiteDialog] = useState<{ mode: 'create' | 'rename'; suite?: TestSuite } | null>(null); const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set()); const [createRunOpen, setCreateRunOpen] = useState(false); const [createRunBusy, setCreateRunBusy] = useState(false); const [createRunBaseUrlBusy, setCreateRunBaseUrlBusy] = useState(false); const [createRunBaseUrl, setCreateRunBaseUrl] = useState(defaultBaseUrl); const [createRunError, setCreateRunError] = useState('');
+  useEffect(() => { setRenameId(null); setMove(null); setSelectedIds(new Set()); }, [reviewScope.organizationId, reviewScope.projectId, repository.kind]);
+  const renameTarget = tests.find((test) => test.id === renameId); const reviewTarget = repository.supportsReview ? tests.find((test) => test.id === reviewId) : undefined;
   async function saveSuite(name: string) {
     if (!suiteDialog || !name || !canManage) return; setBusy(true); setDialogError(''); const suite = suiteDialog.suite;
     try { await repository.saveSuite({ suiteId: suite?.id ?? `suite_${crypto.randomUUID()}`, expectedRevision: suite?.revision ?? 0, name, testIds: suite?.testIds ?? [], ...(suite?.sourceRecordingId ? { sourceRecordingId: suite.sourceRecordingId } : {}) }); setSuiteDialog(null); }
     catch (reason) { setDialogError(messageOf(reason, 'The suite could not be saved.')); } finally { setBusy(false); }
   }
-  async function moveTest(testId: string, targetSuiteId: string | null) {
-    if (!canManage) return; setBusy(true); setDialogError('');
-    try { await repository.moveTest(testId, targetSuiteId); setMoveId(null); } catch (reason) { setDialogError(messageOf(reason, 'The test could not be moved.')); } finally { setBusy(false); }
+  function openMove(testIds: string[], fromSelection: boolean) { setDialogError(''); setMove({ testIds, fromSelection }); }
+  async function moveTests(destination: MoveDestination) {
+    if (!canManage || !move || ('newSuiteName' in destination && !destination.newSuiteName)) return; setBusy(true); setDialogError('');
+    try {
+      let targetSuiteId = 'suiteId' in destination ? destination.suiteId : null;
+      if ('newSuiteName' in destination) {
+        const createdSuiteId = await repository.saveSuite({ suiteId: `suite_${crypto.randomUUID()}`, expectedRevision: 0, name: destination.newSuiteName, testIds: [] });
+        targetSuiteId = createdSuiteId; setMove((current) => current && { ...current, createdSuiteId });
+      }
+      // One at a time: a storage folder moves files, and each move reloads the library.
+      for (const testId of move.testIds) await repository.moveTest(testId, targetSuiteId);
+      if (move.fromSelection) setSelectedIds(new Set());
+      setMove(null);
+    } catch (reason) { setDialogError(messageOf(reason, move.testIds.length === 1 ? 'The test could not be moved.' : 'The tests could not be moved.')); } finally { setBusy(false); }
   }
   async function rename(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!renameTarget) return; setActionError('');
@@ -157,15 +184,18 @@ export function TestLibrary({ repository, reviewScope, currentUser, canManage, c
   function toggleSuite(_suiteId: string, testIds: string[]) { setSelectedIds((current) => { const next = new Set(current); if (testIds.length && testIds.every((id) => next.has(id))) testIds.forEach((id) => next.delete(id)); else testIds.forEach((id) => next.add(id)); return next; }); }
   const rows = tests.map((test) => ({ id: test.id, title: test.title, author: repository.kind === 'cloud' && currentUser ? testAuthorLabel(test, currentUser) : test.authorLabel ?? 'Unknown author', ...(test.issue ? { issue: test.issue } : {}) }));
   const paged = repository.page > 0 || repository.hasNext;
-  return <section className="test-library" aria-label="Test library"><LibraryHeader selectedCount={selectedIds.size} canCreateRun={canCreateRun} onCreateRun={() => onCreateDeviceRun ? onCreateDeviceRun([...selectedIds]) : void openCreateRun()} onCreateSuite={() => { setDialogError(''); setSuiteDialog({ mode: 'create' }); }} />
+  // A storage folder in a repository: changed test files can be committed from here. Refreshes as the library changes.
+  const gitKey = JSON.stringify([tests.map((test) => [test.id, test.title]), suites.map((suite) => [suite.id, suite.testIds])]);
+  return <section className="test-library" aria-label="Test library"><LibraryHeader selectedCount={selectedIds.size} canCreateRun={canCreateRun} canMove={canManage} onMove={() => openMove([...selectedIds], true)} onCreateRun={() => onCreateDeviceRun ? onCreateDeviceRun([...selectedIds]) : void openCreateRun()} onCreateSuite={() => { setDialogError(''); setSuiteDialog({ mode: 'create' }); }} />
+    {repository.kind === 'folder' && <GitChangesBar target={{ kind: 'tests', organizationId: reviewScope.organizationId, projectId: reviewScope.projectId }} refreshKey={gitKey} />}
     {repository.status === 'error' ? <StatePanel tone="error" title={repository.kind === 'folder' ? 'Test folder unavailable' : 'Tests unavailable'} action={<Button onClick={repository.reload}>Try again</Button>}>{repository.kind === 'folder' ? 'Check that the folder under Settings → Test storage still exists, then retry.' : 'Check your workspace access, then retry.'}</StatePanel>
       : repository.status === 'loading' && !tests.length ? <div className="library-loading" role="status">Loading tests…</div>
         : !tests.length ? <StatePanel tone="empty" title="No tests yet" action={<Button variant="primary" onClick={onRecord}>Record your first test</Button>}>{repository.kind === 'folder' ? 'Record a walkthrough to make a test. It is saved as a file in your test folder.' : 'Record a walkthrough to make a test.'}</StatePanel>
-          : <><SuiteList tests={rows} suites={suites} selectedIds={selectedIds} onToggleTest={toggleTest} onToggleSuite={toggleSuite} canManage={canManage} onMove={canManage ? setMoveId : undefined} onRenameSuite={(suite) => { setDialogError(''); setSuiteDialog({ mode: 'rename', suite }); }} onRenameTest={(id) => { setActionError(''); setRenameId(id); }} onDelete={(id) => void deleteTest(id)} onReview={repository.supportsReview ? setReviewId : undefined} emptyMessage={paged ? 'No tests from this suite are on this page.' : 'No tests in this suite yet.'} />{paged && <div className="pagination"><Button disabled={repository.page === 0} onClick={repository.previousPage}>Previous</Button><span>Page {repository.page + 1}</span><Button disabled={!repository.hasNext} onClick={repository.nextPage}>Next</Button></div>}</>}
+          : <><SuiteList tests={rows} suites={suites} selectedIds={selectedIds} onToggleTest={toggleTest} onToggleSuite={toggleSuite} canManage={canManage} onMove={canManage ? (id) => openMove([id], false) : undefined} onRenameSuite={(suite) => { setDialogError(''); setSuiteDialog({ mode: 'rename', suite }); }} onRenameTest={(id) => { setActionError(''); setRenameId(id); }} onDelete={(id) => void deleteTest(id)} onReview={repository.supportsReview ? setReviewId : undefined} emptyMessage={paged ? 'No tests from this suite are on this page.' : 'No tests in this suite yet.'} />{paged && <div className="pagination"><Button disabled={repository.page === 0} onClick={repository.previousPage}>Previous</Button><span>Page {repository.page + 1}</span><Button disabled={!repository.hasNext} onClick={repository.nextPage}>Next</Button></div>}</>}
     {renameTarget && <RenameDialog key={renameTarget.id} title={renameTarget.title} open onOpenChange={(open) => { if (!open) setRenameId(null); }} onSubmit={rename} error={actionError} />}
     <CreateRunDialog key={`${reviewScope.projectId}-${selectedIds.size}`} open={createRunOpen} selectedCount={selectedIds.size} busy={createRunBusy} baseUrlBusy={createRunBaseUrlBusy} baseUrl={createRunBaseUrl} error={createRunError} onOpenChange={(open) => { if (!open) setCreateRunOpen(false); }} onBaseUrlChange={setCreateRunBaseUrl} onSubmit={(name, baseUrl) => void createRun(name, baseUrl)} />
     {suiteDialog && <SuiteDialog mode={suiteDialog.mode} suite={suiteDialog.suite} open onOpenChange={(open) => { if (!open) setSuiteDialog(null); }} busy={busy} error={dialogError} onSubmit={(name) => void saveSuite(name)} />}
-    {moveTarget && <MoveTestDialog title={moveTarget.title} currentSuiteId={suiteForTest(moveTarget.id, suites)} suites={suites} open onOpenChange={(open) => { if (!open) setMoveId(null); }} busy={busy} error={dialogError} onCreateSuite={() => { setMoveId(null); setDialogError(''); setSuiteDialog({ mode: 'create' }); }} onSubmit={(targetSuiteId) => void moveTest(moveTarget.id, targetSuiteId)} />}
+    {move && <MoveTestsDialog title={move.testIds.length === 1 ? tests.find((test) => test.id === move.testIds[0])?.title : undefined} count={move.testIds.length} currentSuiteId={sharedSuite(move.testIds, suites)} createdSuiteId={move.createdSuiteId} suites={suites} onOpenChange={(open) => { if (!open && !busy) setMove(null); }} busy={busy} error={dialogError} onSubmit={(destination) => void moveTests(destination)} />}
     {reviewTarget && <ReviewPanel key={reviewTarget.id} organizationId={reviewScope.organizationId} projectId={reviewScope.projectId} testId={reviewTarget.id} title={reviewTarget.title} reviewerUid={reviewTarget.reviewerUid} reviewerRevision={reviewTarget.reviewerRevision ?? 0} canManage={canManage} onClose={() => setReviewId(null)} />}
     {actionError && !renameTarget && <p className="inline-error" role="alert">{actionError}</p>}
   </section>;
