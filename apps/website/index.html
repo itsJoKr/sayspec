@@ -42,25 +42,16 @@
           </div>
         </div>
 
-        <div class="workflow-preview" aria-label="SaySpec workflow showing narration becoming automated test steps">
-          <div class="preview-label"><span>With SaySpec</span><span>00:18</span></div>
-          <div class="narration-card">
-            <div class="recording-status"><span class="recording-dot" aria-hidden="true"></span> Recording walkthrough</div>
-            <div class="audio-wave" aria-hidden="true">
-              <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-            </div>
-            <blockquote>“Apply the SAVE20 coupon. The cart total should decrease by $20.”</blockquote>
-          </div>
-          <div class="transformation" aria-hidden="true"><span></span><b>becomes</b><span></span></div>
-          <div class="test-card">
-            <div class="test-card-heading"><span>Cart coupon discount test</span></div>
-            <ol class="test-steps">
-              <li><span>1</span><p>Add the <strong>$80 item</strong> to the cart</p><b>Action</b></li>
-              <li><span>2</span><p>Apply coupon <strong>SAVE20</strong></p><b>Action</b></li>
-              <li><span>3</span><p>Cart total decreases by <strong>$20</strong></p><b>Check</b></li>
-            </ol>
-          </div>
-        </div>
+        <figure class="demo-video">
+          <video data-demo-video autoplay muted loop playsinline preload="metadata" poster="/media/sayspec-demo-poster.jpg" width="1080" height="1080" aria-label="SaySpec demo: a tester records a cart coupon walkthrough on a phone while narrating, AI turns it into a test, a later regression run fails, and AI prepares the fix and opens a pull request.">
+            <source src="/media/sayspec-demo.webm" type="video/webm" />
+            <source src="/media/sayspec-demo.mp4" type="video/mp4" />
+          </video>
+          <button class="demo-sound" type="button" data-demo-sound aria-pressed="false">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" /><path class="demo-sound-waves" d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" /><path class="demo-sound-off" d="m16 9.5 5 5m0-5-5 5" /></svg>
+            <span>Sound on</span>
+          </button>
+        </figure>
       </section>
 
       <section class="how section" id="how-it-works" aria-labelledby="how-title">
