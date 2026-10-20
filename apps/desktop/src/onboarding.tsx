@@ -4,8 +4,9 @@ import { AiProviderSettings } from './ai-provider-settings';
 import { MachineSetupCard } from './machine-setup';
 import { NarrationSettings } from './transcription-settings';
 import { Button } from './ui';
+import { TECHNOLOGY_LABELS, type ProjectTechnology } from './technology';
 
-export type OnboardingProject = { id: string; name: string; targetType: 'web' | 'flutter' };
+export type OnboardingProject = { id: string; name: string; targetType: ProjectTechnology };
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message.replace(/^Error:\s*/, '') : 'The source folder could not be selected.');
 
@@ -63,7 +64,7 @@ export function OnboardingPage({ testId, account, projectStep, project, projectP
       <Step number={1} label="Coding AI" done={aiReady}><AiProviderSettings /></Step>
       <Step number={2} label="Narration"><NarrationSettings /></Step>
       <Step number={3} label="Project" done={Boolean(project)}>
-        {project ? <section className="settings-card project-settings-summary" data-testid="onboarding-project"><h2>{project.name}</h2><p className="technology-label">{project.targetType === 'web' ? 'Web · Playwright tests' : 'Flutter · Patrol tests'}</p></section>
+        {project ? <section className="settings-card project-settings-summary" data-testid="onboarding-project"><h2>{project.name}</h2><p className="technology-label">{TECHNOLOGY_LABELS[project.targetType]}</p></section>
           : projectPending ? <section className="settings-card"><h2>Project</h2><p className="settings-inline-status" role="status">Opening the new project…</p></section>
           : projectStep}
       </Step>

@@ -14,6 +14,7 @@ import { OnboardingPage, type OnboardingProject } from './onboarding';
 import { DeleteProjectButton } from './delete-project';
 import { StorageChoice, TestStorageSettingsCard, cloudUnavailableReason, defaultStorage } from './test-storage-settings';
 import { TestInstructionsCard } from './test-instructions';
+import { TECHNOLOGY_LABELS, TechnologySelect, type ProjectTechnology } from './technology';
 
 function messageOf(error: unknown) { return error instanceof Error ? error.message.replace(/^FirebaseError:\s*/, '') : 'The request failed.'; }
 function baseUrlError(value: string) { return value && !/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(value) ? 'Enter a complete HTTP(S) URL.' : undefined; }
@@ -40,7 +41,7 @@ function ProjectCreationForm({ scope, onCreated, compact = false }: { scope: Sco
   const organization = scope.organizations.find((item) => item.id === scope.organizationId);
   const canManage = organization?.role === 'owner' || organization?.role === 'admin';
   const [name, setName] = useState('');
-  const [technology, setTechnology] = useState<'web' | 'flutter'>('web');
+  const [technology, setTechnology] = useState<ProjectTechnology>('web');
   const [baseUrl, setBaseUrl] = useState('');
   const [source, setSource] = useState<LocalSourceSelection | null>(null);
   const [storageChoice, setStorageChoice] = useState<TestStorageMode | null>(null);
@@ -76,7 +77,7 @@ function ProjectCreationForm({ scope, onCreated, compact = false }: { scope: Sco
 
   return <form className={`project-create-form${compact ? ' project-create-form--compact' : ''}`} onSubmit={create}>
     <Field label="Project name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Storefront" autoFocus={!compact} required />
-    <label className="select-field">Technology<select aria-label="Project technology" value={technology} onChange={(event) => { setTechnology(event.target.value as 'web' | 'flutter'); setError(''); }}><option value="web">Web · Playwright tests</option><option value="flutter">Flutter · Patrol tests</option></select></label>
+    <TechnologySelect value={technology} onChange={(next) => { setTechnology(next); setError(''); }} />
     {technology === 'web' && <Field label="Base URL" type="url" value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); setError(''); }} placeholder="https://example.com" error={baseUrlError(baseUrl)} required />}
     <div className="source-picker"><div><strong>Source code folder</strong><span>{technology === 'flutter' ? 'Required for Flutter' : 'Optional for Web'}</span></div><Button type="button" onClick={() => void chooseSource()}>{source ? 'Change folder' : 'Choose folder'}</Button><span className="source-name">{source?.label ?? 'No folder selected'}</span></div>
     <fieldset className="storage-fieldset"><legend>Test storage</legend><StorageChoice name="new-project-storage" value={storage} onChange={setStorageChoice} folder={storageFolder} onFolder={setStorageFolder} cloudReason={cloudReason} disabled={creating} /></fieldset>
@@ -119,7 +120,7 @@ export function ProjectSettings({ scope, source: selectedSource, onSource, onPro
 
   if (!selectedProject) return null;
   return <div className="settings-stack">
-    <section className="settings-card project-settings-summary" aria-labelledby="project-heading"><div className="settings-card__header"><div><h2 id="project-heading">{selectedProject.name}</h2><p className="technology-label">{targetType === 'web' ? 'Web · Playwright tests' : 'Flutter · Patrol tests'}</p></div><DeleteProjectButton key={selectedProject.id} projectName={selectedProject.name} consequence="Deletes the project for everyone in this workspace, with its tests, versions, runs and shared recordings. Tests kept in a storage folder stay on disk." disabledReason={canManage ? undefined : 'Only an organization owner or admin can delete a project.'} onDelete={deleteProject} /></div>
+    <section className="settings-card project-settings-summary" aria-labelledby="project-heading"><div className="settings-card__header"><div><h2 id="project-heading">{selectedProject.name}</h2><p className="technology-label">{TECHNOLOGY_LABELS[targetType]}</p></div><DeleteProjectButton key={selectedProject.id} projectName={selectedProject.name} consequence="Deletes the project for everyone in this workspace, with its tests, versions, runs and shared recordings. Tests kept in a storage folder stay on disk." disabledReason={canManage ? undefined : 'Only an organization owner or admin can delete a project.'} onDelete={deleteProject} /></div>
       {targetType === 'web' && <form className="settings-form" onSubmit={saveBaseUrl}>
         <Field label="Base URL" type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} error={baseUrl && !/^https?:\/\//.test(baseUrl) ? 'Enter a complete HTTP(S) URL.' : undefined} required />
         <Button variant="primary" disabled={!canManage}>Save base URL</Button>

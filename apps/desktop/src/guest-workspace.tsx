@@ -10,6 +10,7 @@ import { OnboardingPage } from './onboarding';
 import { DeleteProjectButton } from './delete-project';
 import { StorageChoice, TestStorageSettingsCard, cloudUnavailableReason } from './test-storage-settings';
 import { TestInstructionsCard } from './test-instructions';
+import { TECHNOLOGY_LABELS, TechnologySelect, type ProjectTechnology } from './technology';
 
 const empty: LocalWorkspaceSnapshot = { projects: [], tests: [], suites: [] };
 function messageOf(error: unknown) { return error instanceof Error ? error.message.replace(/^Error:\s*/, '') : 'The local workspace could not be updated.'; }
@@ -40,7 +41,7 @@ export function LocalProjectOnboarding({ project, projectPending, source, onChoo
 }
 
 export function LocalProjectCreationForm({ onCreated, compact = false }: { onCreated: (project: LocalProject, source: LocalSourceSelection | null) => void; compact?: boolean }) {
-  const [name, setName] = useState(''); const [technology, setTechnology] = useState<'web' | 'flutter'>('web');
+  const [name, setName] = useState(''); const [technology, setTechnology] = useState<ProjectTechnology>('web');
   const [baseUrl, setBaseUrl] = useState('');
   const [source, setSource] = useState<LocalSourceSelection | null>(null); const [creating, setCreating] = useState(false); const [error, setError] = useState('');
   const [storage, setStorage] = useState<TestStorageMode>('local'); const [storageFolder, setStorageFolder] = useState<LocalSourceSelection | null>(null);
@@ -62,7 +63,7 @@ export function LocalProjectCreationForm({ onCreated, compact = false }: { onCre
   }
   return <form className={`project-create-form${compact ? ' project-create-form--compact' : ''}`} onSubmit={create}>
     <Field label="Project name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Storefront" autoFocus={!compact} required />
-    <label className="select-field">Technology<select aria-label="Project technology" value={technology} onChange={(event) => { setTechnology(event.target.value as 'web' | 'flutter'); setError(''); }}><option value="web">Web · Playwright tests</option><option value="flutter">Flutter · Patrol tests</option></select></label>
+    <TechnologySelect value={technology} onChange={(next) => { setTechnology(next); setError(''); }} />
     {technology === 'web' && <Field label="Base URL" type="url" value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); setError(''); }} placeholder="https://example.com" error={baseUrlError} required />}
     <div className="source-picker"><div><strong>Source code folder</strong><span>{technology === 'flutter' ? 'Required for Flutter' : 'Optional for Web'}</span></div><Button type="button" onClick={() => void chooseSource()}>{source ? 'Change folder' : 'Choose folder'}</Button><span className="source-name">{source?.label ?? 'No folder selected'}</span></div>
     <fieldset className="storage-fieldset"><legend>Test storage</legend><StorageChoice name="new-local-project-storage" value={storage} onChange={setStorage} folder={storageFolder} onFolder={setStorageFolder} cloudReason={cloudUnavailableReason({ signedIn: false, plan: null })} disabled={creating} /></fieldset>
@@ -79,7 +80,7 @@ export function LocalProjectSettings({ project, source: selectedSource, onCreate
   const [source, setSource] = useState<LocalSourceSelection | null>(selectedSource ?? null); const [error, setError] = useState('');
   useEffect(() => { setSource(selectedSource ?? null); }, [project.id, selectedSource]);
   async function chooseSource() { setError(''); try { const next = await window.sayspec!.chooseSourceDirectory(); if (next) { setSource(next); onSource(next); } } catch (reason) { setError(messageOf(reason)); } }
-  return <div className="settings-stack"><section className="settings-card project-settings-summary"><div className="settings-card__header"><div><h2>{project.name}</h2><p className="technology-label">{project.targetType === 'web' ? 'Web · Playwright tests' : 'Flutter · Patrol tests'}</p></div><DeleteProjectButton key={project.id} projectName={project.name} consequence="Removes the project and its SaySpec tests and suites from this Mac. Tests kept in a storage folder stay on disk." onDelete={async () => { await window.sayspec!.deleteLocalProject({ projectId: project.id }); onDeleted(); }} /></div></section>
+  return <div className="settings-stack"><section className="settings-card project-settings-summary"><div className="settings-card__header"><div><h2>{project.name}</h2><p className="technology-label">{TECHNOLOGY_LABELS[project.targetType]}</p></div><DeleteProjectButton key={project.id} projectName={project.name} consequence="Removes the project and its SaySpec tests and suites from this Mac. Tests kept in a storage folder stay on disk." onDelete={async () => { await window.sayspec!.deleteLocalProject({ projectId: project.id }); onDeleted(); }} /></div></section>
     <AiProviderSettings />
     <MachineSetupCard projectId={project.id} targetType={project.targetType} sourceHandle={source?.handle} onSourceRequired={() => void chooseSource()} />
     <EntryPointsCard projectId={project.id} targetType={project.targetType} sourceHandle={source?.handle} />
