@@ -19,7 +19,7 @@ export function joinFailure(error: unknown): JoinFailure {
   const value = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; message?: unknown; details?: { reason?: unknown; retryAfterSeconds?: unknown } };
   const code = String(value.code ?? '').replace(/^functions\//, '');
   const reason = value.details?.reason;
-  if (reason === 'seats-full') return { kind: 'seats-full', message: 'This workspace has no free seats. Ask the workspace owner to free a seat, then try again.' };
+  if (reason === 'seats-full') return { kind: 'seats-full', message: 'This workspace has no free seats. Ask the workspace owner to add or free a seat, then try again.' };
   if (reason === 'invalid-code' || code === 'not-found') return { kind: 'invalid-code', message: 'This company code is not valid. Check the code with your workspace owner; it may have been changed or turned off.' };
   if (reason === 'rate-limited' || code === 'resource-exhausted') {
     const seconds = Number(value.details?.retryAfterSeconds);

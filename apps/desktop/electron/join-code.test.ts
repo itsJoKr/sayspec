@@ -23,6 +23,8 @@ test('join failures map to honest copy without echoing codes', () => {
 test('the account portal bridge opens only fixed SaySpec destinations', () => {
   assert.equal(accountPortalUrl({ page: 'portal' }, 'https://portal.example'), 'https://portal.example/portal');
   assert.equal(accountPortalUrl({ page: 'sign-up' }, 'http://127.0.0.1:5002'), 'http://127.0.0.1:5002/sign-up');
+  assert.equal(accountPortalUrl({ page: 'billing' }, 'https://portal.example'), 'https://portal.example/portal/billing');
+  assert.throws(() => accountPortalUrl({ page: 'constructor' }, 'https://portal.example'), /invalid/);
   assert.throws(() => accountPortalUrl({ page: '//evil.example' }, 'https://portal.example'), /invalid/);
   assert.throws(() => accountPortalUrl({ origin: 'https://evil.example', page: 'portal' }, ''), /no account portal/);
   assert.throws(() => accountPortalUrl({ page: 'portal' }, 'http://evil.example'), /no account portal/);

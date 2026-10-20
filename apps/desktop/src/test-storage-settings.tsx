@@ -6,6 +6,7 @@ import { announceTestStorageChange } from './test-repository';
 import { countTests, switchTestStorage } from './test-storage-transfer';
 import { Button } from './ui';
 import { GitSummary } from './git-changes';
+import { OpenAccountPortal } from './workspace-onboarding';
 
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace(/^(Firebase)?Error:\s*/, '') : 'Test storage could not be changed.'; }
 
@@ -15,10 +16,11 @@ export const STORAGE_LABELS: Record<TestStorageMode, { title: string; detail: st
   folder: { title: 'Folder location', detail: 'A folder of your choice, such as a git repository.' },
 };
 
+const PRO_REQUIRED = 'Available on the Pro plan.';
 /** Why SaySpec Cloud cannot be chosen, or undefined when it can. The server enforces the same rules. */
 export function cloudUnavailableReason(input: { signedIn: boolean; plan: PlanKind | null }) {
   if (!input.signedIn) return 'Sign in to a workspace on the Pro plan to use SaySpec Cloud.';
-  if (!isProPlan(input.plan)) return 'Available on the Pro plan.';
+  if (!isProPlan(input.plan)) return PRO_REQUIRED;
   return undefined;
 }
 
@@ -47,6 +49,7 @@ export function StorageChoice({ name, value, onChange, folder, onFolder, cloudRe
         </span>
       </label>;
     })}
+    {cloudReason === PRO_REQUIRED && modes.includes('cloud') && <p className="storage-options__upgrade">The workspace owner can upgrade to Pro in the account portal. <OpenAccountPortal page="billing" label="See plans" /></p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
   </div>;
 }

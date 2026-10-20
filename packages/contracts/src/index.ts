@@ -860,7 +860,7 @@ export interface LocalTranscriptionLifecycleEvent {
 export interface DesktopBridge {
   getAppInfo(): Promise<AppInfo>;
   /** Opens the account portal in the system browser. Only the origin fixed at build time (VITE_SAYSPEC_ACCOUNT_PORTAL_ORIGIN); the renderer cannot supply a URL. */
-  openAccountPortal(input: { page: 'portal' | 'sign-up' }): Promise<void>;
+  openAccountPortal(input: { page: 'portal' | 'sign-up' | 'billing' }): Promise<void>;
   getLocalWorkspace(): Promise<LocalWorkspaceSnapshot>;
   createLocalProject(input: CreateLocalProjectInput): Promise<LocalProject>;
   /** Removes the local project with its tests and suites. */

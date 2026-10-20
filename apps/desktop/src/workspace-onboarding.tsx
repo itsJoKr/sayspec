@@ -54,9 +54,9 @@ export function JoinWorkspaceForm({ flow, autoFocus = false }: { flow: JoinFlow;
   </form>;
 }
 
-export function OpenAccountPortal({ label = 'Open account portal' }: { label?: string }) {
+export function OpenAccountPortal({ label = 'Open account portal', page = 'portal' }: { label?: string; page?: 'portal' | 'billing' }) {
   const [error, setError] = useState('');
-  return <><Button type="button" variant="quiet" onClick={() => { setError(''); void window.sayspec?.openAccountPortal({ page: 'portal' }).catch(() => setError('The account portal could not be opened.')); }}>{label}</Button>{error && <span className="inline-error" role="alert">{error}</span>}</>;
+  return <><Button type="button" variant="quiet" onClick={() => { setError(''); void window.sayspec?.openAccountPortal({ page }).catch(() => setError('The account portal could not be opened.')); }}>{label}</Button>{error && <span className="inline-error" role="alert">{error}</span>}</>;
 }
 
 /** Signed in, but no workspace is selected: join with a code, pick another membership, or set one up in the portal. */

@@ -28,10 +28,11 @@ export function isTrustedMainFrame(event: InvokeEventLike, expectedUrl: string):
  * fixed at build time can be opened (none in a local-only build); the
  * renderer chooses just the page.
  */
+const PORTAL_PAGES = new Map([['portal', '/portal'], ['sign-up', '/sign-up'], ['billing', '/portal/billing']]);
 export function accountPortalUrl(input: unknown, configuredOrigin: string) {
   const value = input as { page?: unknown } | null;
   const origin = /^https:\/\/[^/\s]+$|^http:\/\/127\.0\.0\.1:\d+$/.test(configuredOrigin) ? configuredOrigin : null;
-  const path = value?.page === 'portal' ? '/portal' : value?.page === 'sign-up' ? '/sign-up' : null;
+  const path = PORTAL_PAGES.get(String(value?.page)) ?? null;
   if (!origin) throw new Error('This build has no account portal.');
   if (!path) throw new Error('Account portal request is invalid.');
   return `${origin}${path}`;
