@@ -3,7 +3,7 @@
   "version": "0.11.0",
   "license": "Apache-2.0",
   "private": true,
-  "description": "SaySpec — AI test automation",
+  "description": "SaySpec \u2014 AI test automation",
   "author": "SaySpec",
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -136,6 +136,7 @@
     "electron": "44.4.3",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
+    "firebase-admin": "^14.4.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   }

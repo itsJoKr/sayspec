@@ -5,8 +5,7 @@
   "private": true,
   "workspaces": [
     "apps/*",
-    "packages/*",
-    "firebase/functions"
+    "packages/*"
   ],
   "engines": {
     "node": ">=22.12.0"
@@ -15,15 +14,10 @@
     "dev": "npm run dev -w @sayspec/desktop",
     "dev:local": "npm run dev:local -w @sayspec/desktop",
     "dev:emulator": "npm run dev:emulator -w @sayspec/desktop",
-    "website:dev": "npm run dev -w @sayspec/website",
-    "website:build": "npm run build -w @sayspec/website",
-    "website:build:live": "npm run build -w @sayspec/website -- --mode live",
-    "deploy:website": "npm run website:build:live && firebase deploy --only hosting --project ${SAYSPEC_FIREBASE_PROJECT:?Set SAYSPEC_FIREBASE_PROJECT to your Firebase project ID}",
-    "deploy:backend": "npm run build -w @sayspec/functions && firebase deploy --only firestore:rules,firestore:indexes,storage,functions --project ${SAYSPEC_FIREBASE_PROJECT:?Set SAYSPEC_FIREBASE_PROJECT to your Firebase project ID}",
     "build": "npm run build -w @sayspec/desktop",
     "build:emulator": "npm run build:emulator -w @sayspec/desktop",
     "build:live": "npm run build:live -w @sayspec/desktop",
-    "typecheck": "npm run typecheck -w @sayspec/contracts && npm run typecheck -w @sayspec/functions && npm run typecheck -w @sayspec/desktop",
+    "typecheck": "npm run typecheck -w @sayspec/contracts && npm run typecheck -w @sayspec/desktop",
     "test": "npm run test -w @sayspec/contracts && npm run test -w @sayspec/desktop",
     "test:native": "npm run build && npm run test:native -w @sayspec/desktop",
     "test:native:runs": "npm run build && npm run test:native:runs -w @sayspec/desktop",
@@ -36,39 +30,10 @@
     "test:model-download:real": "npm run test:model-download:real -w @sayspec/desktop",
     "test:agents:real": "npm run test:agents:real -w @sayspec/desktop",
     "test:generation:real": "npm run test:generation:real -w @sayspec/desktop",
-    "emulators:auth": "firebase emulators:start --only auth --project demo-sayspec-local",
-    "emulators:seed": "node firebase/scripts/seed-auth.mjs",
-    "test:emulator:auth": "firebase emulators:exec --only auth --project demo-sayspec-local \"node firebase/scripts/seed-auth.mjs && node firebase/scripts/auth-emulator.test.mjs\"",
-    "test:native:auth": "npm run build:emulator && firebase emulators:exec --only auth --project demo-sayspec-local \"node firebase/scripts/seed-auth.mjs && SAYSPEC_AUTH_SMOKE=1 npm run test:native -w @sayspec/desktop\"",
-    "test:packaged:auth": "firebase emulators:exec --only auth --project demo-sayspec-local \"node firebase/scripts/seed-auth.mjs && npm run test:packaged:auth -w @sayspec/desktop\"",
-    "test:packaged:auth-persistence": "firebase emulators:exec --only auth --project demo-sayspec-local \"node firebase/scripts/seed-auth.mjs && npm run test:packaged:auth-persist-in -w @sayspec/desktop && npm run test:packaged:auth-persist-out -w @sayspec/desktop\"",
-    "test:emulator:rules": "npm run build -w @sayspec/functions && node firebase/scripts/run-rules-tests.mjs",
-    "test:emulator:portable-pro": "npm run build -w @sayspec/functions && node firebase/scripts/run-portable-pro-tests.mjs",
-    "test:emulator:application-fix": "npm run build -w @sayspec/functions && node firebase/scripts/run-application-fix-tests.mjs",
-    "test:emulator:membership": "npm run build -w @sayspec/functions && node firebase/scripts/run-membership-tests.mjs",
-    "test:native:connected-beta": "node firebase/scripts/run-connected-beta.mjs",
-    "test:emulator:managed-fix": "npm run build -w @sayspec/functions && node firebase/scripts/run-managed-fix-tests.mjs",
-    "test:emulator:recording-share": "npm run build -w @sayspec/functions && node firebase/scripts/run-recording-share-tests.mjs",
-    "test:emulator:transcription": "npm run build -w @sayspec/functions && node firebase/scripts/run-narration-transcription-tests.mjs",
-    "test:emulator:flutter-share": "npm run build -w @sayspec/functions && node firebase/scripts/run-flutter-share-tests.mjs",
-    "test:emulator:cloud-patrol-storage": "npm run build -w @sayspec/functions && node firebase/scripts/run-cloud-patrol-storage-tests.mjs",
-    "test:native:flutter-share": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-flutter-share-native.mjs",
-    "test:native:recording-share": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-recording-share-native.mjs",
-    "emulators:seed:workspaces": "npm run build -w @sayspec/functions && node firebase/scripts/seed-workspaces.mjs",
-    "test:native:workspace": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-workspace-native.mjs",
-    "test:native:settings": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-settings-native.mjs",
-    "test:native:project-gate": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-project-gate-native.mjs",
-    "test:native:library": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-library-native.mjs",
     "start": "npm run start -w @sayspec/desktop",
     "package": "npm run package -w @sayspec/desktop",
-    "test:native:managed-fix:pro": "npm run build -w @sayspec/functions && npm run build:emulator && node firebase/scripts/run-managed-fix-pro-native.mjs",
     "test:native:flutter-capture": "npm run build && node --experimental-strip-types apps/desktop/scripts/flutter-capture-native.mjs",
     "test:native:flutter-narration": "npm run build && node --experimental-strip-types apps/desktop/scripts/flutter-narration-native.mjs",
     "test:native:patrol": "npm run build && node --experimental-strip-types apps/desktop/scripts/patrol-run-native.mjs"
-  },
-  "devDependencies": {
-    "@firebase/rules-unit-testing": "^5.0.2",
-    "firebase-admin": "^14.4.0",
-    "firebase-tools": "^15.30.2"
   }
 }

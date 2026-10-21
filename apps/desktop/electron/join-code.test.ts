@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { formatJoinCode, joinFailure, normalizeJoinCode, JOIN_CODE_ALPHABET } from '../src/join-code.ts';
-import { JOIN_CODE_ALPHABET as PORTAL_ALPHABET, normalizeJoinCode as portalNormalize } from '../../website/src/app/validation.ts';
 import { accountPortalUrl } from './security.ts';
 
-test('desktop company-code input matches the portal contract', () => {
-  assert.equal(JOIN_CODE_ALPHABET, PORTAL_ALPHABET);
-  for (const input of ['abcd-efgh', ' ABCD efgh ', 'ABCDEFGH', 'abcd-efg', 'ABCDEFGI', 'ABCD0EFG', 'ABCD-EFGH-J', '']) assert.equal(normalizeJoinCode(input), portalNormalize(input), input);
+test('company codes: eight letters without I and O, entered in any case with spaces or hyphens', () => {
+  assert.equal(JOIN_CODE_ALPHABET, 'ABCDEFGHJKLMNPQRSTUVWXYZ');
+  for (const input of ['abcd-efgh', ' ABCD efgh ', 'ABCDEFGH']) assert.equal(normalizeJoinCode(input), 'ABCDEFGH', input);
+  for (const input of ['abcd-efg', 'ABCDEFGI', 'ABCD0EFG', 'ABCD-EFGH-J', '']) assert.equal(normalizeJoinCode(input), null, input);
   assert.equal(formatJoinCode('ABCDEFGH'), 'ABCD-EFGH');
 });
 

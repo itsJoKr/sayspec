@@ -116,7 +116,7 @@ export function AccountPage({ authSession, joinAction }: { authSession: ReturnTy
 }
 
 function SignInForm({ authSession, onDone, onMode }: { authSession: ReturnType<typeof useAuthSession>; onDone: () => void; onMode: (mode: Mode) => void }) {
-  // Development backends are seeded with this test account (firebase/scripts/seed-auth.mjs).
+  // Development backends (the SaySpec Cloud emulators) are seeded with this test account.
   const development = useRequiredCloud().development;
   const [email, setEmail] = useState(development ? 'tester@sayspec.local' : '');
   const [password, setPassword] = useState(development ? 'local-only-password' : '');

@@ -12,7 +12,8 @@ import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 
 /**
- * Milestone 12 connected Beta acceptance (run through firebase/scripts/run-connected-beta.mjs).
+ * Milestone 12 connected Beta acceptance, run by the SaySpec Cloud repository
+ * against its emulators (integration/run-connected-beta.mjs there).
  *
  * One Auth pool for the portal and the built desktop app: an owner signs up in
  * the portal and generates a company code; a tester creates an account in the
@@ -21,7 +22,7 @@ import { getFirestore } from 'firebase-admin/firestore';
  * invalidates the old code, and a live removal reaches the open desktop app.
  * Admin SDK access is used only to read back server state, never to set it up.
  */
-if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) throw new Error('Run through firebase/scripts/run-connected-beta.mjs.');
+if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) throw new Error('Run through run-connected-beta.mjs in the SaySpec Cloud repository.');
 const cwd = new URL('..', import.meta.url).pathname;
 const portal = 'http://127.0.0.1:5002';
 const projectId = 'demo-sayspec-local';

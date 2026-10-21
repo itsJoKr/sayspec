@@ -7,17 +7,10 @@ release/
 .env
 .env.*
 !.env.example
-# Firebase emulator configuration: demo project, loopback hosts, no secrets
+# Emulator configuration: demo project, loopback hosts, no secrets
 !apps/desktop/.env.emulator
-!firebase/functions/.env.demo-sayspec-local
-.firebase/
 coverage/
 tmp/
-firebase/functions/lib/
-
-# Local secrets (Firebase Functions emulator reads .secret.local; *.local is never deployed)
-*.secret.local
-.secret.local
 
 # Flutter build output and tool caches
 .dart_tool/

@@ -1,6 +1,6 @@
-// Company-code contract shared with the portal (apps/website/src/app/validation.ts)
-// and joinCodeRedeem (firebase/functions/src/membership.ts): eight letters
-// without I/O, shown as ABCD-EFGH, entered in any case with spaces or hyphens.
+// Company-code contract shared with the SaySpec Cloud portal and its
+// joinCodeRedeem function: eight letters without I/O, shown as ABCD-EFGH,
+// entered in any case with spaces or hyphens.
 export const JOIN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 export const JOIN_CODE_LENGTH = 8;
 

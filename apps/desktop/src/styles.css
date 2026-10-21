@@ -1,7 +1,7 @@
 @import './brand-tokens.css';
 
 /*
- * SaySpec desktop. Visual language follows the account portal (apps/website):
+ * SaySpec desktop. Visual language follows the SaySpec account portal:
  * paper/ink palette, big tight titles, plain bordered panels, one strong
  * primary action per area. Nothing renders below 13px; body text is 15px.
  */
