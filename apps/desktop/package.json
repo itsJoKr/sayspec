@@ -88,6 +88,14 @@
       "**/playwright/**",
       "**/playwright-core/**"
     ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "resetAdHocDarwinSignature": true
+    },
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
