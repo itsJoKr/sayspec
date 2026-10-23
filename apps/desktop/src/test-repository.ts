@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { LibraryTest, TestStorageMode, TestStorageSettings, TestSuite } from '@sayspec/contracts';
+import type { LibraryTest, PatrolSavedTest, SavedWebTestVersion, TestLibraryScope, TestStorageMode, TestStorageSettings, TestSuite } from '@sayspec/contracts';
 import type { CloudBackend, CloudPageCursor } from './cloud/backend';
 import { useCloud } from './cloud/context';
 
 export const LIBRARY_PAGE_SIZE = 25;
 
-/** A library test plus the review fields only SaySpec cloud storage has. */
-export type RepositoryTest = LibraryTest & { ownerUid?: string; reviewerUid?: string | null; reviewerRevision?: number };
+/** A library test plus the fields only SaySpec cloud storage has: review state and a Flutter test's current version. */
+export type RepositoryTest = LibraryTest & { ownerUid?: string; reviewerUid?: string | null; reviewerRevision?: number; currentVersionId?: string };
 export type SuiteSave = { suiteId: string; expectedRevision: number; name: string; testIds: string[]; sourceRecordingId?: string };
+/** A test's code for reading: its files (the entry file first) and, for a Web test, the steps they carry out. */
+export type TestCode = { files: { relativePath: string; text: string }[]; steps?: { instruction: string; assertion: string }[]; version?: number; savedAt?: string };
 
 /**
  * Storage-independent access to a project's tests and suites. The library,
@@ -30,6 +32,8 @@ export interface TestRepository {
   /** Creates or renames a suite and resolves to its ID, which a storage folder derives from the name. */
   saveSuite(change: SuiteSave): Promise<string>;
   moveTest(testId: string, targetSuiteId: string | null): Promise<void>;
+  /** The test's current code, or null when neither this Mac nor the storage has it. */
+  readCode(testId: string): Promise<TestCode | null>;
 }
 
 /** Where a project's tests are read from, decided by its storage setting and whether the workspace is signed in. */
@@ -38,13 +42,36 @@ export type RepositorySource = { organizationId: string; projectId: string; sign
 export function useTestRepository(source: RepositorySource): TestRepository {
   const backend = useCloud();
   const cloud = Boolean(backend) && source.signedIn && source.mode === 'cloud';
-  const cloudRepository = useCloudRepository(cloud ? backend : null, source.organizationId, source.projectId, source.targetType !== 'flutter');
-  const deviceRepository = useDeviceRepository(!cloud, source.organizationId, source.projectId, source.mode);
+  const cloudRepository = useCloudRepository(cloud ? backend : null, source.organizationId, source.projectId, source.targetType);
+  const deviceRepository = useDeviceRepository(!cloud, source.organizationId, source.projectId, source.mode, source.targetType);
   return cloud ? cloudRepository : deviceRepository;
 }
 
+const patrolCode = (test: Pick<PatrolSavedTest, 'relativePath' | 'source'> & Partial<Pick<PatrolSavedTest, 'version' | 'createdAt'>>): TestCode => ({ files: [{ relativePath: test.relativePath, text: test.source }], ...(test.version ? { version: test.version } : {}), ...(test.createdAt ? { savedAt: test.createdAt } : {}) });
+function webCode(test: Pick<SavedWebTestVersion, 'files' | 'steps' | 'runtime'> & Partial<Pick<SavedWebTestVersion, 'version' | 'createdAt'>>): TestCode {
+  const isEntry = (file: { relativePath: string }) => file.relativePath === test.runtime.entrypoint;
+  return {
+    files: [...test.files.filter(isEntry), ...test.files.filter((file) => !isEntry(file))].map((file) => ({ relativePath: file.relativePath, text: file.text })),
+    steps: test.steps.map((step) => ({ instruction: step.instruction, assertion: step.assertion })),
+    ...(test.version ? { version: test.version } : {}), ...(test.createdAt ? { savedAt: test.createdAt } : {}),
+  };
+}
+
+/** The latest code this Mac holds for a test. A storage folder is re-read first, so edits made outside SaySpec show. */
+async function readLocalCode(scope: TestLibraryScope, testId: string, targetType?: 'web' | 'flutter'): Promise<TestCode | null> {
+  if (targetType !== 'web') {
+    const patrol = (await window.sayspec!.listPatrolTests(scope)).find((test) => test.id === testId);
+    if (patrol) return patrolCode(patrol);
+  }
+  if (targetType !== 'flutter') {
+    const web = (await window.sayspec!.listProjectWebTestVersions(scope)).filter((version) => version.testId === testId).sort((left, right) => right.version - left.version)[0];
+    if (web) return webCode(web);
+  }
+  return null;
+}
+
 /** SaySpec Cloud storage for signed-in workspaces, paged on the server. Reviews cover Web tests only for now. */
-function useCloudRepository(backend: CloudBackend | null, organizationId: string, projectId: string, supportsReview: boolean): TestRepository {
+function useCloudRepository(backend: CloudBackend | null, organizationId: string, projectId: string, targetType?: 'web' | 'flutter'): TestRepository {
   const [tests, setTests] = useState<RepositoryTest[]>([]); const [suites, setSuites] = useState<TestSuite[]>([]);
   const [status, setStatus] = useState<TestRepository['status']>('loading'); const [retryKey, setRetryKey] = useState(0);
   const [page, setPage] = useState(0); const [cursors, setCursors] = useState<Array<CloudPageCursor | null>>([null]); const [last, setLast] = useState<CloudPageCursor | null>(null);
@@ -63,7 +90,7 @@ function useCloudRepository(backend: CloudBackend | null, organizationId: string
   }, [backend, organizationId, projectId, page, retryKey, cursors]);
   const scope = { organizationId, projectId };
   return {
-    kind: 'cloud', status, tests, suites, page, hasNext: tests.length >= LIBRARY_PAGE_SIZE, supportsReview,
+    kind: 'cloud', status, tests, suites, page, hasNext: tests.length >= LIBRARY_PAGE_SIZE, supportsReview: targetType !== 'flutter',
     nextPage() { if (!last || tests.length < LIBRARY_PAGE_SIZE) return; setCursors((value) => [...value.slice(0, page + 1), last]); setPage((value) => value + 1); },
     previousPage() { setPage((value) => Math.max(0, value - 1)); },
     reload() { setRetryKey((value) => value + 1); },
@@ -71,11 +98,23 @@ function useCloudRepository(backend: CloudBackend | null, organizationId: string
     async deleteTest(testId) { await backend!.tests.archive({ ...scope, testId }); },
     async saveSuite(change) { await backend!.tests.saveSuite({ ...scope, ...change }); return change.suiteId; },
     async moveTest(testId, targetSuiteId) { await backend!.tests.moveTest({ ...scope, testId, targetSuiteId }); },
+    // This Mac's copy first, as runs use it; otherwise the version SaySpec Cloud holds, like a storage switch reads it.
+    async readCode(testId) {
+      const local = await readLocalCode(scope, testId, targetType);
+      if (local) return local;
+      if (targetType === 'flutter') {
+        const versionId = tests.find((test) => test.id === testId)?.currentVersionId;
+        const version = versionId ? await backend!.tests.readPatrolVersion({ ...scope, testId, versionId }) : undefined;
+        return version ? patrolCode(version) : null;
+      }
+      const draft = await backend!.tests.readDraftSource({ ...scope, testId });
+      return draft?.files.length ? webCode(draft) : null;
+    },
   };
 }
 
 /** Storage on this machine, behind the desktop bridge: a storage folder, or the guest workspace. Paged locally. */
-function useDeviceRepository(enabled: boolean, organizationId: string, projectId: string, mode: TestStorageMode): TestRepository {
+function useDeviceRepository(enabled: boolean, organizationId: string, projectId: string, mode: TestStorageMode, targetType?: 'web' | 'flutter'): TestRepository {
   const [all, setAll] = useState<LibraryTest[]>([]); const [suites, setSuites] = useState<TestSuite[]>([]);
   const [status, setStatus] = useState<TestRepository['status']>('loading'); const [page, setPage] = useState(0);
   const scope = useMemo(() => ({ organizationId, projectId }), [organizationId, projectId]);
@@ -104,6 +143,7 @@ function useDeviceRepository(enabled: boolean, organizationId: string, projectId
     deleteTest: (testId) => mutate(() => window.sayspec!.deleteLibraryTest({ ...scope, testId })),
     saveSuite: async (change) => (await mutate(() => window.sayspec!.saveLibrarySuite({ ...scope, ...change, projectId }))).id,
     moveTest: (testId, targetSuiteId) => mutate(() => window.sayspec!.moveLibraryTest({ ...scope, testId, targetSuiteId })),
+    readCode: (testId) => readLocalCode(scope, testId, targetType),
   };
 }
 

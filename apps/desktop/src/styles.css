@@ -348,8 +348,10 @@ progress { accent-color: var(--accent); }
 .test-table thead th { background: #faf8f3; color: var(--muted); font-size: var(--text-sm); font-weight: 750; }
 .test-table tbody tr:hover { background: #faf8f3; }
 .test-table-title { color: var(--ink); font-weight: 650; overflow-wrap: anywhere; }
-.test-selection { display: flex; align-items: center; gap: var(--space-3); cursor: pointer; }
-.test-selection input { flex: none; }
+.test-selection { display: flex; align-items: center; gap: var(--space-3); }
+.test-selection input { flex: none; cursor: pointer; }
+.test-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.test-open:hover { text-decoration: underline; text-underline-offset: 3px; }
 .test-table-issue { display: block; margin: 2px 0 0 calc(13px + var(--space-3)); color: var(--warning); font-size: var(--text-sm); font-weight: 500; }
 .test-table-author { color: var(--muted); overflow-wrap: anywhere; }
 .test-table th.test-table-actions, .test-table td.test-table-actions { padding-inline: 10px; text-align: center; }
@@ -506,6 +508,15 @@ progress { accent-color: var(--accent); }
 .log-dialog h3 { margin: 0; font-size: 16px; font-weight: 760; overflow-wrap: anywhere; }
 .log-dialog pre { margin: 0; overflow: auto; padding: var(--space-4); background: var(--terminal); color: #e9eee9; font-size: var(--text-sm); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-dialog > p { margin: 0; padding: var(--space-4); }
+.test-code-dialog header p { margin: 2px 0 0; color: var(--muted); font-size: var(--text-sm); }
+.test-code-body { display: grid; align-content: start; gap: var(--space-5); overflow: auto; padding: var(--space-4); }
+.test-code-steps { display: grid; gap: var(--space-2); margin: 0; padding-left: 1.5em; }
+.test-code-steps span { display: block; color: var(--muted); font-size: var(--text-sm); }
+.test-code-file { display: grid; gap: var(--space-2); }
+.test-code-file h4 { margin: 0; font-size: var(--text-sm); font-weight: 650; }
+.test-code-dialog pre { counter-reset: line; padding: var(--space-3) var(--space-4) var(--space-3) 0; border: 1px solid var(--line); background: #faf8f3; color: var(--ink); white-space: pre; overflow-wrap: normal; }
+.test-code-dialog pre code { padding: 0; background: none; font-size: inherit; overflow-wrap: normal; }
+.test-code-line::before { counter-increment: line; content: counter(line); display: inline-block; width: 4.5ch; margin-right: 2ch; color: var(--muted); text-align: right; user-select: none; }
 .setup-callout { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-left: 4px solid var(--warning); background: #fbf4e6; color: var(--ink); font-size: 14px; }
 
 /* ---------- Fixes ---------- */
