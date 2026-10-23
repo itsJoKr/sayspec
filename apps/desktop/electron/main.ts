@@ -907,6 +907,11 @@ app.whenReady().then(async () => {
     if (typeof value.testId !== 'string' || (value.targetSuiteId !== null && typeof value.targetSuiteId !== 'string')) throw new Error('Test storage request is invalid.');
     return storage.moveTest({ ...scope, testId: value.testId, targetSuiteId: value.targetSuiteId as string | null });
   });
+  ipcMain.handle('test-library:delete-suite', (event, input: unknown) => {
+    const { storage, value, scope } = libraryScope(event, input);
+    if (typeof value.suiteId !== 'string') throw new Error('Test storage request is invalid.');
+    return storage.deleteSuite({ ...scope, suiteId: value.suiteId });
+  });
   ipcMain.handle('machine:choose-source', async (event) => {
     if (!isTrustedMainFrame(event, rendererUrl)) throw new Error('Untrusted source-directory request');
     let selectedPath = testMode ? process.env.SAYSPEC_TEST_SOURCE_DIRECTORY : undefined;

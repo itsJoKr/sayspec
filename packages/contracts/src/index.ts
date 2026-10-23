@@ -904,6 +904,8 @@ export interface DesktopBridge {
   renameLibraryTest(input: TestLibraryScope & { testId: string; title: string }): Promise<void>;
   deleteLibraryTest(input: TestLibraryScope & { testId: string }): Promise<void>;
   saveLibrarySuite(input: TestLibraryScope & SuiteChange): Promise<TestSuite>;
+  /** Deletes a suite that holds no tests. */
+  deleteLibrarySuite(input: TestLibraryScope & { suiteId: string }): Promise<void>;
   moveLibraryTest(input: TestLibraryScope & MoveTestToSuiteInput): Promise<void>;
   chooseSourceDirectory(): Promise<LocalSourceSelection | null>;
   /** Remembers the folder behind a selection for a project so it is restored after restart. The path stays in the main process. */

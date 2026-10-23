@@ -338,6 +338,8 @@ progress { accent-color: var(--accent); }
 .suite-section--just-recorded .suite-section__header h2 { color: var(--accent); }
 .suite-section__header span { color: var(--muted); font-size: var(--text-sm); }
 .suite-section--unassigned .suite-section__header h2 { color: var(--muted); }
+.suite-section__header > .suite-section__actions { flex: none; align-items: center; flex-wrap: nowrap; gap: var(--space-1); }
+.suite-delete { min-height: 32px; padding: 4px 10px; color: var(--danger); font-size: var(--text-sm); }
 .suite-menu-trigger, .test-menu-trigger { flex: none; width: 32px; height: 32px; border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--ink); cursor: pointer; font-size: 22px; line-height: 1; }
 .suite-menu-trigger:hover, .suite-menu-trigger[data-state="open"], .test-menu-trigger:hover, .test-menu-trigger[data-state="open"] { border-color: var(--line); background: var(--surface); }
 .test-table-wrap { border: 1px solid var(--line); background: var(--page); overflow-x: auto; }
@@ -509,12 +511,20 @@ progress { accent-color: var(--accent); }
 .log-dialog pre { margin: 0; overflow: auto; padding: var(--space-4); background: var(--terminal); color: #e9eee9; font-size: var(--text-sm); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-dialog > p { margin: 0; padding: var(--space-4); }
 .test-code-dialog header p { margin: 2px 0 0; color: var(--muted); font-size: var(--text-sm); }
-.test-code-body { display: grid; align-content: start; gap: var(--space-5); overflow: auto; padding: var(--space-4); }
-.test-code-steps { display: grid; gap: var(--space-2); margin: 0; padding-left: 1.5em; }
-.test-code-steps span { display: block; color: var(--muted); font-size: var(--text-sm); }
+.test-code-body { display: grid; align-content: start; gap: var(--space-5); overflow: auto; padding: var(--space-4) var(--space-4) var(--space-5); }
+.test-code-section { display: grid; gap: var(--space-2); max-width: 72rem; }
+.test-code-section h4 { margin: 0; color: var(--muted); font-size: var(--text-sm); font-weight: 750; }
+.test-code-section p { margin: 0; }
+.test-code-section ul, .test-code-section ol { display: grid; gap: var(--space-2); margin: 0; padding-left: 1.5em; }
+.test-code-section li span { display: block; color: var(--muted); font-size: var(--text-sm); }
+.test-code-dialog .test-code-section pre { justify-self: start; max-width: 100%; padding: var(--space-2) var(--space-3); white-space: pre-wrap; overflow-wrap: anywhere; }
+.test-code-source { display: grid; gap: var(--space-3); }
+.test-code-source summary { cursor: pointer; color: var(--muted); font-size: var(--text-sm); font-weight: 750; }
+.test-code-source[open] summary { margin-bottom: var(--space-3); }
 .test-code-file { display: grid; gap: var(--space-2); }
 .test-code-file h4 { margin: 0; font-size: var(--text-sm); font-weight: 650; }
-.test-code-dialog pre { counter-reset: line; padding: var(--space-3) var(--space-4) var(--space-3) 0; border: 1px solid var(--line); background: #faf8f3; color: var(--ink); white-space: pre; overflow-wrap: normal; }
+.test-code-dialog pre { margin: 0; border: 1px solid var(--line); background: #faf8f3; color: var(--ink); }
+.test-code-file pre { counter-reset: line; padding: var(--space-3) var(--space-4) var(--space-3) 0; white-space: pre; overflow-wrap: normal; }
 .test-code-dialog pre code { padding: 0; background: none; font-size: inherit; overflow-wrap: normal; }
 .test-code-line::before { counter-increment: line; content: counter(line); display: inline-block; width: 4.5ch; margin-right: 2ch; color: var(--muted); text-align: right; user-select: none; }
 .setup-callout { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-left: 4px solid var(--warning); background: #fbf4e6; color: var(--ink); font-size: 14px; }

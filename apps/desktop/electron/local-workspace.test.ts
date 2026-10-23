@@ -65,12 +65,15 @@ test('guest suites persist, reject stale edits, cross-project and deleted member
     const secondSuite = await store.saveSuite({ projectId: project.id, suiteId: 'suite_other', expectedRevision: 0, name: 'Other', testIds: [] });
     await store.moveTestToSuite({ projectId: project.id, testId: testA.id, targetSuiteId: secondSuite.id });
     assert.deepEqual(store.snapshot().suites.map((suite) => suite.testIds), [[], [testA.id]]);
+    await assert.rejects(store.deleteSuite({ projectId: project.id, suiteId: secondSuite.id }), /Only an empty suite/);
     await assert.rejects(store.saveSuite(change), /changed elsewhere/);
     await assert.rejects(store.saveSuite({ ...change, expectedRevision: 1, testIds: [testB.id] }), /active tests from this project/);
     await store.deleteTest({ projectId: project.id, testId: testA.id });
     await assert.rejects(store.saveSuite({ ...change, expectedRevision: 1 }), /active tests/);
     const reopened = new LocalWorkspaceStore(file); await reopened.initialize();
     assert.deepEqual(reopened.snapshot().suites.map((suite) => [suite.id, suite.testIds]), [['suite_smoke', []], ['suite_other', []]]);
+    await reopened.deleteSuite({ projectId: project.id, suiteId: 'suite_smoke' });
+    assert.deepEqual(reopened.snapshot().suites.map((suite) => suite.id), ['suite_other']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

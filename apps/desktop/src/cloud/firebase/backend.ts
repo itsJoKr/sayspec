@@ -178,6 +178,7 @@ export function createFirebaseBackend(): CloudBackend {
       async rename(input) { await call('testRename', input); },
       async archive(input) { await call('testArchive', input); },
       async saveSuite(input) { await call('suiteSave', input); },
+      async deleteSuite(input) { await call('suiteDelete', input); },
       async moveTest(input) { await call('suiteMoveTest', input); },
       async importPortable(input) { await call('testPortableImport', input); },
       async readPatrolVersion(input) { return toCloudPatrolVersion(input.testId, (await getDoc(doc(firestore, `${projectPath(input)}/tests/${input.testId}/versions/${input.versionId}`))).data()); },

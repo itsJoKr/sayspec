@@ -174,6 +174,14 @@ export class FolderTestLibrary {
     return { id: suiteIdFor(name), projectId: input.projectId, name, testIds: tests.filter((test) => test.suite === (current ?? name)).map((test) => test.id), revision: 1, updatedAt: new Date().toISOString() };
   }
 
+  /** Deletes an empty suite's folder. A folder with tests or other files in it stays. */
+  async deleteSuite(suiteId: string) {
+    const { suites, tests } = await this.scan();
+    const folder = suites.find((name) => suiteIdFor(name) === suiteId);
+    if (!folder) throw new Error('The suite was not found in the storage folder.');
+    if (tests.some((test) => test.suite === folder) || !await this.#removeEmptyFolder(folder)) throw new Error('Only an empty suite can be deleted. Move its tests out first.');
+  }
+
   /** Makes sure a suite folder exists, keeping an existing one (and its tests) as it is. */
   async ensureSuite(name: string) {
     const folder = suiteFolderName(name);
@@ -235,12 +243,15 @@ export class FolderTestLibrary {
   }
 
   /** "Just Recorded" only stages fresh tests, so its folder goes away once it holds none. */
-  async #pruneJustRecorded() {
-    const folder = path.join(this.root, JUST_RECORDED);
+  async #pruneJustRecorded() { await this.#removeEmptyFolder(JUST_RECORDED); }
+
+  /** Removes a suite folder that holds nothing but placeholders, and resolves to whether it did. */
+  async #removeEmptyFolder(name: string) {
+    const folder = path.join(this.root, name);
     const entries = await readdir(folder).catch(() => undefined);
-    if (!entries || entries.some((name) => name !== '.gitkeep' && name !== '.DS_Store')) return;
+    if (!entries || entries.some((entry) => entry !== '.gitkeep' && entry !== '.DS_Store')) return false;
     await rm(path.join(folder, '.gitkeep'), { force: true }); await rm(path.join(folder, '.DS_Store'), { force: true });
-    await rmdir(folder).catch(() => undefined);
+    return rmdir(folder).then(() => true, () => false);
   }
 }
 

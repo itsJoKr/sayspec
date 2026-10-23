@@ -2,14 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { LibraryTest, PatrolSavedTest, SavedWebTestVersion, TestLibraryScope, TestStorageMode, TestStorageSettings, TestSuite } from '@sayspec/contracts';
 import type { CloudBackend, CloudPageCursor } from './cloud/backend';
 import { useCloud } from './cloud/context';
+import { describePatrolSource, type TestAboutBlock } from './patrol-summary';
 
 export const LIBRARY_PAGE_SIZE = 25;
 
 /** A library test plus the fields only SaySpec cloud storage has: review state and a Flutter test's current version. */
 export type RepositoryTest = LibraryTest & { ownerUid?: string; reviewerUid?: string | null; reviewerRevision?: number; currentVersionId?: string };
 export type SuiteSave = { suiteId: string; expectedRevision: number; name: string; testIds: string[]; sourceRecordingId?: string };
-/** A test's code for reading: its files (the entry file first) and, for a Web test, the steps they carry out. */
-export type TestCode = { files: { relativePath: string; text: string }[]; steps?: { instruction: string; assertion: string }[]; version?: number; savedAt?: string };
+/**
+ * A test's code for reading: its files (the entry file first) and what they
+ * say they check — a Web test's steps, or a Patrol file's own description and
+ * the names of its patrolTests.
+ */
+export type TestCode = { files: { relativePath: string; text: string }[]; steps?: { instruction: string; assertion: string }[]; about?: TestAboutBlock[]; cases?: string[]; version?: number; savedAt?: string };
 
 /**
  * Storage-independent access to a project's tests and suites. The library,
@@ -31,6 +36,8 @@ export interface TestRepository {
   deleteTest(testId: string): Promise<void>;
   /** Creates or renames a suite and resolves to its ID, which a storage folder derives from the name. */
   saveSuite(change: SuiteSave): Promise<string>;
+  /** Deletes a suite that holds no tests. */
+  deleteSuite(suite: Pick<TestSuite, 'id' | 'revision'>): Promise<void>;
   moveTest(testId: string, targetSuiteId: string | null): Promise<void>;
   /** The test's current code, or null when neither this Mac nor the storage has it. */
   readCode(testId: string): Promise<TestCode | null>;
@@ -47,7 +54,7 @@ export function useTestRepository(source: RepositorySource): TestRepository {
   return cloud ? cloudRepository : deviceRepository;
 }
 
-const patrolCode = (test: Pick<PatrolSavedTest, 'relativePath' | 'source'> & Partial<Pick<PatrolSavedTest, 'version' | 'createdAt'>>): TestCode => ({ files: [{ relativePath: test.relativePath, text: test.source }], ...(test.version ? { version: test.version } : {}), ...(test.createdAt ? { savedAt: test.createdAt } : {}) });
+const patrolCode = (test: Pick<PatrolSavedTest, 'relativePath' | 'source'> & Partial<Pick<PatrolSavedTest, 'version' | 'createdAt'>>): TestCode => ({ files: [{ relativePath: test.relativePath, text: test.source }], ...describePatrolSource(test.source), ...(test.version ? { version: test.version } : {}), ...(test.createdAt ? { savedAt: test.createdAt } : {}) });
 function webCode(test: Pick<SavedWebTestVersion, 'files' | 'steps' | 'runtime'> & Partial<Pick<SavedWebTestVersion, 'version' | 'createdAt'>>): TestCode {
   const isEntry = (file: { relativePath: string }) => file.relativePath === test.runtime.entrypoint;
   return {
@@ -97,6 +104,7 @@ function useCloudRepository(backend: CloudBackend | null, organizationId: string
     async renameTest(testId, title) { await backend!.tests.rename({ ...scope, testId, title }); },
     async deleteTest(testId) { await backend!.tests.archive({ ...scope, testId }); },
     async saveSuite(change) { await backend!.tests.saveSuite({ ...scope, ...change }); return change.suiteId; },
+    async deleteSuite(suite) { await backend!.tests.deleteSuite({ ...scope, suiteId: suite.id, expectedRevision: suite.revision }); },
     async moveTest(testId, targetSuiteId) { await backend!.tests.moveTest({ ...scope, testId, targetSuiteId }); },
     // This Mac's copy first, as runs use it; otherwise the version SaySpec Cloud holds, like a storage switch reads it.
     async readCode(testId) {
@@ -142,6 +150,7 @@ function useDeviceRepository(enabled: boolean, organizationId: string, projectId
     renameTest: (testId, title) => mutate(() => window.sayspec!.renameLibraryTest({ ...scope, testId, title })),
     deleteTest: (testId) => mutate(() => window.sayspec!.deleteLibraryTest({ ...scope, testId })),
     saveSuite: async (change) => (await mutate(() => window.sayspec!.saveLibrarySuite({ ...scope, ...change, projectId }))).id,
+    deleteSuite: (suite) => mutate(() => window.sayspec!.deleteLibrarySuite({ ...scope, suiteId: suite.id })),
     moveTest: (testId, targetSuiteId) => mutate(() => window.sayspec!.moveLibraryTest({ ...scope, testId, targetSuiteId })),
     readCode: (testId) => readLocalCode(scope, testId, targetType),
   };

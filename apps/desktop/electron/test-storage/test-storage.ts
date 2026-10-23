@@ -155,6 +155,12 @@ export class TestStorage {
     return this.#localWorkspace.saveSuite(change);
   }
 
+  async deleteSuite(input: TestLibraryScope & { suiteId: string }) {
+    const backend = this.#backend(input);
+    if (backend.kind === 'files') return backend.library.deleteSuite(input.suiteId);
+    this.#guest(input, backend); await this.#localWorkspace.deleteSuite(input);
+  }
+
   async moveTest(input: TestLibraryScope & { testId: string; targetSuiteId: string | null }) {
     const backend = this.#backend(input);
     if (backend.kind === 'files') return backend.library.move(input.testId, input.targetSuiteId);

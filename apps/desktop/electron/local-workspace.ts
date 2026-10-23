@@ -98,6 +98,15 @@ export class LocalWorkspaceStore {
     await this.#persist(); return structuredClone(updated);
   }
 
+  /** Deletes a suite that holds no tests. */
+  async deleteSuite(input: { projectId: string; suiteId: string }): Promise<void> {
+    const suite = this.#state.suites.find((item) => item.id === input.suiteId && item.projectId === input.projectId);
+    if (!suite) throw new Error('The suite was not found.');
+    if (suite.testIds.length) throw new Error('Only an empty suite can be deleted. Move its tests out first.');
+    this.#state.suites = this.#state.suites.filter((item) => item !== suite);
+    await this.#persist();
+  }
+
   async moveTestToSuite(input: { projectId: string; testId: string; targetSuiteId: string | null }): Promise<void> {
     const test = this.#findTest(input.projectId, input.testId);
     if (test.status === 'archived') throw new Error('Archived tests cannot be moved.');

@@ -28,6 +28,7 @@ const bridge: DesktopBridge = {
   renameLibraryTest: (input) => ipcRenderer.invoke('test-library:rename-test', input),
   deleteLibraryTest: (input) => ipcRenderer.invoke('test-library:delete-test', input),
   saveLibrarySuite: (input) => ipcRenderer.invoke('test-library:save-suite', input),
+  deleteLibrarySuite: (input) => ipcRenderer.invoke('test-library:delete-suite', input),
   moveLibraryTest: (input) => ipcRenderer.invoke('test-library:move-test', input),
   chooseSourceDirectory: () => ipcRenderer.invoke('machine:choose-source'),
   rememberSourceDirectory: (input) => ipcRenderer.invoke('machine:remember-source', input),

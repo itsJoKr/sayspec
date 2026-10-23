@@ -115,6 +115,8 @@ export interface CloudTests {
   rename(input: ProjectRef & { testId: string; title: string }): Promise<void>;
   archive(input: ProjectRef & { testId: string }): Promise<void>;
   saveSuite(input: SuiteChange): Promise<void>;
+  /** Deletes an empty suite; `expectedRevision` guards against a teammate's change meanwhile. */
+  deleteSuite(input: ProjectRef & { suiteId: string; expectedRevision: number }): Promise<void>;
   moveTest(input: ProjectRef & { testId: string; targetSuiteId: string | null }): Promise<void>;
   /** Stores an imported portable bundle as a new test. */
   importPortable(input: ProjectRef & { testId: string; bundle: PortableWebTestBundle }): Promise<void>;

@@ -104,6 +104,7 @@ test('suites are folders: create, move into, rename and empty Just Recorded disa
     await assert.rejects(storage.saveSuite({ ...scope, suiteId: 'suite_fixtures', expectedRevision: 0, name: 'fixtures', testIds: [] }), /already exists/);
     await storage.moveTest({ ...scope, testId: version.testId, targetSuiteId: suite.id });
     assert.deepEqual((await readdir(folder)).sort(), ['Checkout flows', 'fixtures']);
+    await assert.rejects(storage.deleteSuite({ ...scope, suiteId: suite.id }), /Only an empty suite/);
     await assert.rejects(storage.moveTest({ ...scope, testId: version.testId, targetSuiteId: 'suite_missing' }), /not found/);
 
     await storage.saveSuite({ ...scope, suiteId: suite.id, expectedRevision: 1, name: 'Payments', testIds: [version.testId] });
@@ -114,6 +115,10 @@ test('suites are folders: create, move into, rename and empty Just Recorded disa
 
     await storage.moveTest({ ...scope, testId: version.testId, targetSuiteId: null });
     assert.equal((await storage.library(scope)).tests[0].relativePath, 'pay-with-saved-card.spec.ts');
+    // The emptied suite folder can be deleted; the helper folder next to it is not a suite and stays.
+    await storage.deleteSuite({ ...scope, suiteId: (await storage.library(scope)).suites[0].id });
+    assert.deepEqual((await storage.library(scope)).suites, []);
+    assert.deepEqual((await readdir(folder)).filter((name) => !name.startsWith('.')).sort(), ['fixtures', 'pay-with-saved-card.spec.ts']);
     await storage.deleteTest({ ...scope, testId: version.testId });
     assert.deepEqual((await storage.library(scope)).tests, []);
     assert.equal(await storage.has(scope, version.testId), false);
