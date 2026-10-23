@@ -100,6 +100,7 @@ export interface GitRepositoryStatus {
   pullRequests?: 'github-cli' | 'browser';
 }
 export interface GitChangedFile { path: string; status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' }
+/** `baseBranch` equals `branch` when SaySpec committed straight to the checked-out branch, which needs no pull request. */
 export interface GitCommitRecord {
   id: string; targetKey: string; repositoryName: string; branch: string; baseBranch: string; commit: string; subject: string;
   paths: string[]; createdAt: string; createdBranch: boolean;

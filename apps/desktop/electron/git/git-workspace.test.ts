@@ -89,7 +89,6 @@ test('an applied application fix is committed alone to a new SaySpec branch, pus
     assert.equal(view.blocked, undefined);
     assert.match(view.suggestedBranch, /^sayspec\/fix-the-catalog-price-was-seven-instead-of-[a-z0-9]{6}$/);
     assert.match(view.suggestedMessage, /^Fix: The catalog price was seven instead of twelve\n\n/);
-    await assert.rejects(instance.commit(spec, { paths: ['lib/catalog.dart'], message: 'x', branch: { kind: 'current' } }), /only adds commits to branches it created/);
     await assert.rejects(instance.commit(spec, { paths: ['lib/other.dart'], message: 'x', branch: { kind: 'new', name: 'sayspec/x' } }), /moved on/);
     await assert.rejects(instance.commit(spec, { paths: ['lib/catalog.dart'], message: 'x', branch: { kind: 'new', name: '-bad name' } }), /valid branch name/);
 
@@ -146,6 +145,55 @@ test('the GitHub CLI creates the pull request, and a second commit joins the sam
     const second = await instance.commit(tests, { paths: ['e2e/cart_test.dart'], message: 'Update SaySpec tests', branch: { kind: 'current' } });
     assert.deepEqual([second.branch, second.baseBranch, second.createdBranch], ['sayspec/fix-price', 'main', false]);
     assert.deepEqual(porcelain(source), ['?? lib/app.dart']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('tests committed straight to the checked-out branch are pushed there, with no pull request', async () => {
+  const { root, remote, source } = await repository();
+  try {
+    git(source, 'checkout', '-q', '-b', 'dev');
+    await mkdir(path.join(source, 'e2e'), { recursive: true }); await writeFile(path.join(source, 'e2e', 'cart_test.dart'), 'void main() {}\n');
+    await writeFile(path.join(source, 'lib', 'other.dart'), 'const other = 2;\n');
+    const { instance, opened } = workspace(root); await instance.initialize();
+    const tests = { key: 'tests:local/project_one:all', directory: path.join(source, 'e2e'), include: (file: string) => file.endsWith('_test.dart'), branchStem: 'tests', message: 'Update SaySpec tests' };
+    const record = await instance.commit(tests, { paths: ['e2e/cart_test.dart'], message: 'Update SaySpec tests', branch: { kind: 'current' } });
+    assert.deepEqual([record.branch, record.baseBranch, record.createdBranch], ['dev', 'dev', false]);
+    assert.equal(git(source, 'branch', '--show-current'), 'dev');
+    assert.equal(git(source, 'show', '--name-only', '--format=', 'HEAD'), 'e2e/cart_test.dart');
+    assert.deepEqual(porcelain(source), [' M lib/other.dart']);
+    // A branch SaySpec did not create stays the user's own.
+    assert.equal((await instance.view(tests)).status.sayspecBranch, undefined);
+
+    await instance.push(tests, record.id);
+    assert.equal(git(remote, 'rev-parse', 'refs/heads/dev'), record.commit);
+    await assert.rejects(instance.pullRequest(tests, record.id), /went straight to dev, so there is no pull request/);
+    assert.deepEqual(opened, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a staged rename is committed as a whole, and stays staged when a hook rejects the commit', async () => {
+  const { root, source } = await repository();
+  try {
+    await mkdir(path.join(source, 'e2e'), { recursive: true }); await writeFile(path.join(source, 'e2e', 'old_test.dart'), 'void main() { cart(); }\n');
+    git(source, 'add', 'e2e'); git(source, 'commit', '-q', '-m', 'Tests');
+    git(source, 'mv', 'e2e/old_test.dart', 'e2e/new_test.dart');
+    assert.deepEqual(porcelain(source), ['R  e2e/old_test.dart -> e2e/new_test.dart']);
+    const { instance } = workspace(root); await instance.initialize();
+    const tests = { key: 'tests:local/project_one:all', directory: path.join(source, 'e2e'), include: (file: string) => file.endsWith('_test.dart'), branchStem: 'tests', message: 'Update SaySpec tests' };
+    const view = await instance.view(tests);
+    assert.deepEqual(view.changes, [{ path: 'e2e/new_test.dart', status: 'renamed' }, { path: 'e2e/old_test.dart', status: 'deleted' }]);
+    const paths = view.changes.map((item) => item.path);
+
+    const hook = path.join(source, '.git', 'hooks', 'pre-commit');
+    await writeFile(hook, '#!/bin/sh\nexit 1\n'); await chmod(hook, 0o755);
+    await assert.rejects(instance.commit(tests, { paths, message: 'Rename a test', branch: { kind: 'current' } }), /Git did not commit/);
+    assert.deepEqual(porcelain(source), ['R  e2e/old_test.dart -> e2e/new_test.dart']);
+
+    await rm(hook);
+    await instance.commit(tests, { paths, message: 'Rename a test', branch: { kind: 'current' } });
+    assert.deepEqual(git(source, 'show', '--name-status', '--no-renames', '--format=', 'HEAD').split('\n'), ['A\te2e/new_test.dart', 'D\te2e/old_test.dart']);
+    assert.equal(git(source, 'show', 'HEAD:e2e/new_test.dart'), 'void main() { cart(); }');
+    assert.deepEqual(porcelain(source), []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -8,6 +8,8 @@ const STATUS: Record<GitTargetView['changes'][number]['status'], string> = { mod
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 /** Every Git view reloads after a commit, push or pull request anywhere: a pull request covers every commit on its branch. */
 const GIT_CHANGED = 'sayspec:git-changed';
+/** Committed straight to the checked-out branch: pushing it is the last step, with no pull request. */
+const direct = (record: GitCommitRecord) => record.branch === record.baseBranch;
 
 /** Loads a target's Git view, again when `refreshKey` changes and when the window regains focus. */
 function useGitView(target: GitTarget | null, refreshKey?: unknown) {
@@ -41,8 +43,8 @@ export function GitSummary({ target }: { target: GitTarget | null }) {
 
 /**
  * Commit, push and pull request for changes SaySpec made in a Git repository.
- * SaySpec commits only the listed files, only to a branch it creates (or one it
- * created earlier), and runs the user's own Git, so their login and hooks apply.
+ * SaySpec commits only the listed files, to a branch it creates or to the
+ * checked-out branch, and runs the user's own Git, so their login and hooks apply.
  */
 export function GitChanges({ target, refreshKey, title = 'Commit to Git', onChanged }: { target: GitTarget | null; refreshKey?: unknown; title?: string; onChanged?: () => void }) {
   const { view, error: loadError, reload } = useGitView(target, refreshKey);
@@ -56,7 +58,7 @@ export function GitChangesBar({ target, refreshKey }: { target: GitTarget | null
   const { view, reload } = useGitView(target, refreshKey);
   const [open, setOpen] = useState(false);
   if (!target || !view?.status.repository) return null;
-  const waiting = view.commits.filter((item) => !item.pushedAt || (!item.pullRequestUrl && !item.pullRequestOpenedAt));
+  const waiting = view.commits.filter((item) => !item.pushedAt || (!direct(item) && !item.pullRequestUrl && !item.pullRequestOpenedAt));
   if (!view.changes.length && !waiting.length) return null;
   return <div className="git-bar" data-testid="git-bar"><span><strong>Git</strong> · {view.changes.length ? `${plural(view.changes.length, 'changed test file')} not committed` : 'committed tests ready to push or review'} · <Where view={view} /></span>
     <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Trigger asChild><Button>{view.changes.length ? 'Commit…' : 'Push or review…'}</Button></Dialog.Trigger>
@@ -103,19 +105,19 @@ function GitPanel({ target, view, title, reload }: { target: GitTarget; view: Gi
           : <label className="git-files__row"><input type="checkbox" checked={selected.has(file.path)} disabled={busy} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(file.path)) next.delete(file.path); else next.add(file.path); return next; })} /><code>{file.path}</code><span>{STATUS[file.status]}</span></label>}</li>)}</ul>
       </fieldset>
       <fieldset className="git-branch"><legend>Branch</legend>
-        {status.sayspecBranch && <label className="git-branch__choice"><input type="radio" name="git-branch" checked={mode === 'current'} disabled={busy} onChange={() => setMode('current')} /><span>Add to <code>{status.sayspecBranch.name}</code>, the SaySpec branch you are on</span></label>}
-        <label className="git-branch__choice">{status.sayspecBranch && <input type="radio" name="git-branch" checked={mode === 'new'} disabled={busy} onChange={() => setMode('new')} />}<span>New branch from <code>{status.branch}</code></span><input aria-label="New branch name" value={branch} disabled={busy || mode !== 'new'} onChange={(event) => setBranch(event.target.value)} spellCheck={false} /></label>
+        <label className="git-branch__choice"><input type="radio" name="git-branch" checked={mode === 'new'} disabled={busy} onChange={() => setMode('new')} /><span>New branch from <code>{status.branch}</code></span><input aria-label="New branch name" value={branch} disabled={busy || mode !== 'new'} onChange={(event) => setBranch(event.target.value)} spellCheck={false} /></label>
+        <label className="git-branch__choice"><input type="radio" name="git-branch" checked={mode === 'current'} disabled={busy} onChange={() => setMode('current')} /><span>{status.sayspecBranch ? <>Add to <code>{status.sayspecBranch.name}</code>, the SaySpec branch you are on</> : <>Commit directly to <code>{status.branch}</code>, the branch you are on</>}</span></label>
       </fieldset>
       <label className="git-message">Commit message<textarea value={message} rows={4} disabled={busy} onChange={(event) => setMessage(event.target.value)} /></label>
       <div className="git-actions"><Button variant="primary" type="submit" disabled={busy || !selected.size || !message.trim() || (mode === 'new' && !branch.trim())}>{busy ? 'Working…' : `Commit ${plural(selected.size, 'file')}`}</Button>
-        <span className="control-help">{mode === 'new' ? 'SaySpec creates the branch, switches this checkout to it and commits only these files. Your other changes stay as they are.' : 'SaySpec commits only these files to this branch.'}</span></div>
+        <span className="control-help">{mode === 'new' ? 'SaySpec creates the branch, switches this checkout to it and commits only these files. Your other changes stay as they are.' : status.sayspecBranch ? 'SaySpec commits only these files to this branch.' : `SaySpec commits only these files straight to ${status.branch}. Pushing sends them there with no pull request.`}</span></div>
     </form>}
     {!changes.length && !commits.length && <p className="git-note">Nothing to commit: these files match the last commit.</p>}
     {shown.length > 0 && <ul className="git-commits" aria-label="Commits made by SaySpec">{shown.map((record) => <li key={record.id}>
       <span><code>{record.commit.slice(0, 7)}</code> {record.subject} · <code>{record.branch}</code>{record.pushedAt ? ` · pushed to ${record.remote}` : ''}</span>
       <span className="git-commits__actions">{!record.pushedAt
         ? status.remote ? <Button disabled={busy} onClick={() => void push(record)}>Push to {status.remote.name}</Button> : <span className="control-help">No remote is set up, so the commit stays in this repository.</span>
-        : <Button disabled={busy} onClick={() => void pullRequest(record)}>{record.pullRequestUrl ? 'Open pull request' : status.pullRequests === 'github-cli' ? 'Create pull request' : 'Open pull request page'}</Button>}</span>
+        : direct(record) ? null : <Button disabled={busy} onClick={() => void pullRequest(record)}>{record.pullRequestUrl ? 'Open pull request' : status.pullRequests === 'github-cli' ? 'Create pull request' : 'Open pull request page'}</Button>}</span>
     </li>)}</ul>}
     {error && <p className="inline-error git-error" role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
   </section>;

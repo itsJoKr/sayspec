@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, realpath, rename, stat } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitChangedFile, GitCommitRecord, GitRepositoryStatus, GitTargetView } from '@sayspec/contracts';
 
@@ -112,9 +112,10 @@ export function parseStatus(output: string): GitChangedFile[] {
 
 /**
  * Commits, pushes and opens pull requests for changes SaySpec made in a Git
- * repository the user chose. SaySpec commits only to branches it creates, only
- * the files it lists, and runs the user's own `git` (and GitHub CLI), so their
- * credentials, hooks and configuration apply and SaySpec stores no token.
+ * repository the user chose. SaySpec commits only the files it lists, to a
+ * branch it creates or, when the user chooses, to the checked-out branch, and
+ * runs the user's own `git` (and GitHub CLI), so their credentials, hooks and
+ * configuration apply and SaySpec stores no token.
  */
 export class GitWorkspace {
   readonly #path: string;
@@ -153,7 +154,11 @@ export class GitWorkspace {
     return { status, changes, ...(blocked ? { blocked } : {}), suggestedBranch: await this.#freeBranch(root, `sayspec/${spec.branchStem}`), suggestedMessage: spec.message, commits };
   }
 
-  /** Commits `paths` (from the repository root) to a new SaySpec branch, or to the checked-out SaySpec branch. */
+  /**
+   * Commits `paths` (from the repository root) to a new SaySpec branch, or to the
+   * checked-out branch. A SaySpec branch keeps its base; any other branch is its
+   * own base, so the commit is pushed straight to it with no pull request.
+   */
   async commit(spec: GitTargetSpec, input: { paths: string[]; message: string; branch: { kind: 'new'; name: string } | { kind: 'current' } }): Promise<GitCommitRecord> {
     if (!spec.directory || spec.statusOnly) throw new Error('There is nothing SaySpec can commit here.');
     const message = typeof input.message === 'string' ? input.message.replace(/\r\n/g, '\n').trim() : '';
@@ -170,20 +175,22 @@ export class GitWorkspace {
       if (paths.some((item) => !changed.has(item))) throw new Error('The changes moved on since you looked. Review them again.');
       if (spec.exactPaths && paths.length !== changed.size) throw new Error('An applied fix is committed as a whole.');
       const original = view.status.branch!;
-      let branch = original; let baseBranch: string;
-      if (input.branch.kind === 'current') {
-        if (!view.status.sayspecBranch) throw new Error('SaySpec only adds commits to branches it created. Commit to a new branch instead.');
-        baseBranch = view.status.sayspecBranch.baseBranch;
-      } else {
+      let branch = original; const baseBranch = view.status.sayspecBranch?.baseBranch ?? original;
+      if (input.branch.kind === 'new') {
         branch = String(input.branch.name ?? '').trim();
         if (!BRANCH.test(branch) || branch.includes('..') || branch.endsWith('.lock') || branch.endsWith('/') || (await this.#git(root, ['check-ref-format', '--branch', branch])).code !== 0) throw new Error('Choose a valid branch name, such as sayspec/fix-login.');
         if ((await this.#git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0) throw new Error(`A branch named ${branch} already exists. Choose another name.`);
-        baseBranch = view.status.sayspecBranch?.baseBranch ?? original;
       }
-      const staged = new Set((await this.#git(root, ['diff', '--cached', '--name-only', '-z', '--', ...paths.map(literal)])).stdout.split('\0').filter(Boolean));
+      // Without --no-renames a staged rename lists only its new path, and undoing a failed commit would unstage the old one.
+      const staged = new Set((await this.#git(root, ['diff', '--cached', '--name-only', '--no-renames', '-z', '--', ...paths.map(literal)])).stdout.split('\0').filter(Boolean));
+      // A staged deletion, such as the old side of a staged rename, is in neither the index nor the working tree:
+      // `git add` rejects its path, and the commit takes the deletion as staged.
+      const indexed = new Set((await this.#git(root, ['ls-files', '-z', '--', ...paths.map(literal)])).stdout.split('\0').filter(Boolean));
+      const present = await Promise.all(paths.map((item) => indexed.has(item) || lstat(path.join(root, item)).then(() => true, () => false)));
+      const adding = paths.filter((_item, index) => present[index]);
       if (input.branch.kind === 'new') await this.#must(root, ['checkout', '-q', '-b', branch], 'Git could not create the branch');
       const identity = await this.#identityOptions(root);
-      const added = await this.#git(root, ['add', '-A', '--', ...paths.map(literal)]);
+      const added: Run = adding.length ? await this.#git(root, ['add', '-A', '--', ...adding.map(literal)]) : { code: 0, stdout: '', stderr: '' };
       const committed = added.code === 0 ? await this.#git(root, [...identity, 'commit', '-q', '-m', message, '--', ...paths.map(literal)], COMMIT_TIMEOUT) : added;
       if (committed.code !== 0) {
         const unstage = paths.filter((item) => !staged.has(item));
@@ -217,6 +224,7 @@ export class GitWorkspace {
 
   async pullRequest(spec: GitTargetSpec, commitId: string): Promise<GitCommitRecord> {
     const record = this.#record(spec, commitId);
+    if (record.branch === record.baseBranch) throw new Error(`This commit went straight to ${record.branch}, so there is no pull request to open.`);
     const sibling = this.#records.find((item) => item.root === record.root && item.branch === record.branch && item.pullRequestUrl);
     if (sibling?.pullRequestUrl) { record.pullRequestUrl = sibling.pullRequestUrl; await this.#persist(); await this.#openExternal(sibling.pullRequestUrl); const { root: _root, ...result } = record; return result; }
     if (!record.pushedAt || !record.remote) throw new Error('Push the branch before opening a pull request.');
