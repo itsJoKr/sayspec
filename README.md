@@ -11,7 +11,7 @@ SaySpec turns a narrated manual QA walkthrough into an automated test. You click
 - **Local-first:** recordings, transcripts, tests and runs stay on your machine. Tests can live in SaySpec's local storage or in a folder you choose, such as a git repository.
 - **Git:** when the source folder or the test folder is a Git repository, an applied fix or a changed test can be committed to a new `sayspec/…` branch, pushed and opened as a pull request, using your own Git login. SaySpec commits only the files it changed and adds commits only to branches it created.
 
-SaySpec is a desktop app for macOS, built with Electron, React, TypeScript and Vite.
+SaySpec is a desktop app for macOS, built with Electron, React, TypeScript and Vite. To use it without building from source, get the signed and notarized app at [sayspec.app](https://sayspec.app).
 
 ## Getting started
 
@@ -38,7 +38,7 @@ Two small sample apps are included for trying the full flow:
 | `packages/sayspec_flutter_recorder` | The Flutter recorder SDK, published on pub.dev (BSD-3-Clause). |
 | `fixtures` | Sample Web and Flutter apps used for manual testing and native tests. |
 
-This repository is the SaySpec desktop app. SaySpec Cloud (the hosted backend for accounts, workspaces and shared tests) and the sayspec.app website are separate and not open source.
+This repository is the SaySpec desktop app. SaySpec Cloud (the hosted backend for accounts, workspaces and shared tests) and the [sayspec.app](https://sayspec.app) website are separate and not open source.
 
 ## Optional cloud
 
