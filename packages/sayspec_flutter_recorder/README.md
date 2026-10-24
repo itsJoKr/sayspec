@@ -1,8 +1,8 @@
 # SaySpec Flutter Recorder
 
-Instrument a Flutter app so the SaySpec desktop app can turn a narrated Android walkthrough into reusable Patrol tests.
+Instrument a Flutter app so the SaySpec desktop app can turn a narrated walkthrough on Android or iOS into reusable Patrol tests.
 
-> **Platform status:** Android is supported. iOS recording has not yet been qualified. This package records only when a SaySpec capture session supplies a local endpoint and session credentials.
+> **Platform status:** Recording works on Android emulators and phones and on iOS simulators. This package records only when a SaySpec capture session supplies a local endpoint and session credentials.
 
 ## Features
 
@@ -55,7 +55,7 @@ class MyApp extends StatelessWidget {
 }
 ```
 
-When SaySpec launches the instrumented app, it supplies its private `SAYSPEC_RECORDING_*` values as Dart defines and forwards the device loopback port to its local capture server. The SDK reads and validates those values internally and shows a small draggable SaySpec overlay: the app opens idle, **Record** starts one test and **Stop** saves it, after which SaySpec restarts the app process (without rebuilding) for the next test. Overlay taps are not recorded and the overlay is hidden from evidence screenshots. When the app is launched normally, `initializeFromEnvironment` returns `false`, leaves the recorder disabled, and the app runs normally.
+When SaySpec launches the instrumented app, it supplies its private `SAYSPEC_RECORDING_*` values as Dart defines and connects the app to its local capture server: through a port forward on Android, and directly on an iOS simulator, which shares the Mac's loopback interface. The SDK reads and validates those values internally and shows a small draggable SaySpec overlay: the app opens idle, **Record** starts one test and **Stop** saves it, after which SaySpec restarts the app process (without rebuilding) for the next test. Overlay taps are not recorded and the overlay is hidden from evidence screenshots. When the app is launched normally, `initializeFromEnvironment` returns `false`, leaves the recorder disabled, and the app runs normally.
 
 Add stable keys and semantic labels to important controls so generated finders are resilient:
 
@@ -77,14 +77,14 @@ await SaySpecRecorder.instance.mark('cart updated');
 
 Text entry is recorded as the field's final value, so typing, pasting, autofill and dictation all end up in the same `enterText` action. Every field is recorded as entered, passwords included: recordings are made with test accounts, and the generated test signs in with the same value. An obscured field's action also carries `obscured: true`. Record only with test accounts, never with real personal credentials.
 
-The recorder posts evidence to the capture URL supplied at launch. SaySpec uses an ephemeral bearer token and an Android port forward to a loopback-only desktop listener. The SDK does not contain a cloud endpoint and does not upload evidence by itself.
+The recorder posts evidence to the capture URL supplied at launch. SaySpec uses an ephemeral bearer token and a loopback-only desktop listener, reached through a port forward on Android and directly from an iOS simulator. The SDK does not contain a cloud endpoint and does not upload evidence by itself.
 
 Screenshots are optional. Set `captureScreenshots: false`, or omit `screenshotBoundaryKey`, to record interaction identity and timing without image evidence.
 
 ## Limitations
 
 - The app must be built with this package; it cannot instrument an arbitrary production binary.
-- Only Android recording has been qualified for this release.
+- Recording works on Android emulators and phones and on iOS simulators, not on physical iPhones or iPads.
 - A generated finder is evidence, not a final assertion. Review generated Patrol tests before saving or running them.
 - Screenshot capture is bounded by `maxScreenshots` and `maxScreenshotBytes`.
 
