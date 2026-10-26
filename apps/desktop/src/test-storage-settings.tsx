@@ -132,6 +132,6 @@ export function ChooseStorageFolderPanel({ organizationId, projectId, targetType
   }
   return <section className="state-panel state-panel--empty" aria-label="Choose test folder">
     <span className="state-panel__icon" aria-hidden="true">○</span>
-    <div><h3>Where is this project’s test folder?</h3><p>This project keeps its tests in a folder, such as a git repository. Choose your copy of that folder on this Mac.</p><Button variant="primary" onClick={() => void choose()}>Choose folder</Button>{error && <p className="inline-error" role="alert">{error}</p>}</div>
+    <div><h3>Where is this project’s test folder?</h3><p>This project keeps its tests in a folder, such as a git repository. Choose your copy of that folder on this Mac.{targetType === 'flutter' && ' For a Flutter project, choose the project folder: its tests are kept in its patrol_test/ folder, where Patrol runs them.'}</p><Button variant="primary" onClick={() => void choose()}>Choose folder</Button>{error && <p className="inline-error" role="alert">{error}</p>}</div>
   </section>;
 }

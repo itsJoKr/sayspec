@@ -694,6 +694,7 @@ app.whenReady().then(async () => {
   await patrolRunAnalysis.initialize();
   patrolRunner = new PatrolRunner({
     store: patrolRuns, captures: flutterSessions,
+    inPlaceRoot: (scope) => testStorage?.inPlaceRoot(scope),
     events: {
       onRunStarted: (runId) => { void patrolRunAnalysis?.discard(runId); },
       onRunFailed: (run, sourcePath) => { void patrolRunAnalysis?.start(run, sourcePath); },
@@ -1197,6 +1198,8 @@ app.whenReady().then(async () => {
     if (!isTrustedMainFrame(event, rendererUrl) || !patrolRunner || typeof input !== 'object' || input === null) throw new Error('Patrol run request is invalid.');
     const value = input as Record<string, unknown>;
     if (![value.organizationId, value.projectId, value.testId, value.deviceId, value.sourceHandle].every((item) => typeof item === 'string')) throw new Error('Patrol run request is invalid.');
+    // Running a test's latest version runs its file as it is now.
+    if (typeof value.versionId !== 'string') await syncFolderTests(value);
     return patrolRunner.run({ organizationId: String(value.organizationId), projectId: String(value.projectId), testId: String(value.testId), ...(typeof value.versionId === 'string' ? { versionId: value.versionId } : {}), deviceId: String(value.deviceId) }, selectedDirectories.root(String(value.sourceHandle)));
   });
   ipcMain.handle('patrol:cancel', async (event, input: unknown) => {

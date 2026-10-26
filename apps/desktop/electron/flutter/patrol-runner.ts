@@ -12,6 +12,7 @@ import { androidTestRelativePath } from './integration.ts';
 import { flutterDeviceId, readIosPatrolWiring, readXcresultCases, removeXcresults, simulatorOsVersion } from './ios-patrol.ts';
 import { deviceReportFiles, instrumentationFailure, ownerOf, readableLog, splitPatrolLog, stripAnsi } from './patrol-log.ts';
 import { resolveProjectFlutterToolchain } from './toolchain.ts';
+import { parseTestFile } from '../test-storage/test-file-format.ts';
 
 type RunControl = { stop: boolean; activeKey?: string };
 /** Run lifecycle hooks; a run that failed on the device starts its analysis. `onConsole` streams the run's console. */
@@ -53,11 +54,14 @@ export class PatrolRunner {
   /** Consoles of the runs started in this process, oldest first. */
   readonly #consoles = new Map<string, RunConsole>();
   readonly #events: RunEvents;
+  readonly #inPlaceRoot?: (scope: { organizationId: string; projectId: string }) => string | undefined;
 
-  constructor(options: { store: PatrolRunStore; captures: FlutterCaptureSessionManager; events?: RunEvents }) {
+  /** `inPlaceRoot` names the patrol_test/ folder a project stores its tests in, when Patrol runs them right there. */
+  constructor(options: { store: PatrolRunStore; captures: FlutterCaptureSessionManager; events?: RunEvents; inPlaceRoot?: (scope: { organizationId: string; projectId: string }) => string | undefined }) {
     this.#store = options.store;
     this.#captures = options.captures;
     this.#events = options.events ?? {};
+    this.#inPlaceRoot = options.inPlaceRoot;
   }
 
   /** Records a refusal as a real, inspectable attempt. */
@@ -174,9 +178,10 @@ export class PatrolRunner {
   /**
    * Runs one saved test as a new attempt.
    *
-   * The saved source is materialized into the project's `integration_test/`
+   * The saved source is materialized into the project's `patrol_test/`
    * folder, so the executed file is byte-identical to the saved hash; a
-   * mismatch aborts before the build.
+   * mismatch aborts before the build. A test stored in that folder runs from
+   * its stored file, which must hold the same source below its header.
    */
   async run(input: Omit<PatrolRunInput, 'sourceHandle'>, sourcePath: string, applicationPatch?: ApplicationPatchLink): Promise<PatrolAttempt> {
     const test = this.#store.test(input.testId, input.versionId);
@@ -463,12 +468,10 @@ export class PatrolRunner {
       active.child?.kill('SIGTERM');
     };
     options.signal?.addEventListener('abort', abort, { once: true });
-    let previousSource: string | undefined;
-    let materialized = false;
+    let materialized: { previous?: string; written: boolean } | undefined;
     await this.#store.recordAttempt(attempt);
     try {
-      previousSource = await this.#materialize(sourcePath, test);
-      materialized = true;
+      materialized = await this.#materialize(sourcePath, test, { temporary: options.restoreSource });
       // A previous run's report must never be read as this run's result.
       await clearDeviceReports(sourcePath);
       attempt = { ...attempt, state: 'building', summary: 'Building and launching the instrumented app…' };
@@ -515,7 +518,7 @@ export class PatrolRunner {
       return failed;
     } finally {
       options.signal?.removeEventListener('abort', abort);
-      if (options.restoreSource && materialized) await this.#restoreMaterialized(sourcePath, test.relativePath, previousSource, test.contentHash);
+      if (options.restoreSource && materialized?.written) await this.#restoreMaterialized(sourcePath, test.relativePath, materialized.previous, test.contentHash);
       await this.#store.releaseLease(lease.id);
       this.#active.delete(attemptId);
       await rm(work, { recursive: true, force: true });
@@ -526,11 +529,14 @@ export class PatrolRunner {
    * Writes the saved source and refuses to continue if the file changed.
    * A file holding another saved version of the same test is SaySpec's own
    * earlier copy (a run leaves its version in place), so a newer version, such
-   * as an applied fix or a teammate's change, replaces it.
+   * as an applied fix or a teammate's change, replaces it. A test stored in
+   * this project's patrol_test/ is run as it is there; a `temporary` candidate
+   * is written anyway and removed again after its run.
    */
-  async #materialize(sourcePath: string, test: PatrolSavedTest) {
+  async #materialize(sourcePath: string, test: PatrolSavedTest, options: { temporary?: boolean } = {}): Promise<{ previous?: string; written: boolean }> {
     const { relativePath, source, contentHash: expectedHash } = test;
     const { writeFile, mkdir } = await import('node:fs/promises');
+    if (!options.temporary && await this.#storedInPlace(sourcePath, test)) return { previous: await readStoredTest(sourcePath, test), written: false };
     await assertSafeTestPath(sourcePath, relativePath);
     const absolute = path.join(sourcePath, relativePath);
     const existing = await readFile(absolute, 'utf8').catch(() => undefined);
@@ -543,7 +549,15 @@ export class PatrolRunner {
     await assertSafeTestPath(sourcePath, relativePath);
     await writeFile(absolute, source);
     if (createHash('sha256').update(await readFile(absolute)).digest('hex') !== expectedHash) throw new Error('Materialized Patrol source does not match the selected version.');
-    return existing;
+    return { previous: existing, written: true };
+  }
+
+  /** Whether the project stores its tests in this checkout's patrol_test/, so each saved test is already a file there. */
+  async #storedInPlace(sourcePath: string, test: PatrolSavedTest) {
+    const root = this.#inPlaceRoot?.({ organizationId: test.organizationId, projectId: test.projectId });
+    if (!root) return false;
+    const [stored, project] = await Promise.all([realpath(root).catch(() => undefined), realpath(path.join(sourcePath, 'patrol_test')).catch(() => undefined)]);
+    return Boolean(stored) && stored === project;
   }
 
   async #restoreMaterialized(sourcePath: string, relativePath: string, previous: string | undefined, expectedHash: string) {
@@ -785,6 +799,19 @@ export async function assertSafeTestPath(sourcePath: string, relativePath: strin
     if (metadata?.isSymbolicLink()) throw new Error('Patrol source path contains a symbolic link.');
     if (metadata && cursor !== path.join(sourcePath, relativePath) && !metadata.isDirectory()) throw new Error('Patrol source parent is not a directory.');
   }
+}
+
+/**
+ * The file a run uses for a test stored in the project's patrol_test/: the
+ * stored file itself, which SaySpec never writes over. It must hold the
+ * version being run, apart from SaySpec's comment header.
+ */
+export async function readStoredTest(sourcePath: string, test: Pick<PatrolSavedTest, 'relativePath' | 'contentHash'>) {
+  await assertSafeTestPath(sourcePath, test.relativePath);
+  const stored = await readFile(path.join(sourcePath, test.relativePath), 'utf8').catch(() => undefined);
+  if (stored === undefined) throw new Error(`${test.relativePath} is no longer in the project, so the test was moved or deleted. Reload the tests and start a new run.`);
+  if (createHash('sha256').update(parseTestFile(stored).source).digest('hex') !== test.contentHash) throw new Error(`${test.relativePath} changed after this version was saved, and SaySpec does not write over a stored test. Reload the tests and start a new run to test the file as it is now.`);
+  return stored;
 }
 
 /**

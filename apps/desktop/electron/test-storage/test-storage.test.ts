@@ -10,7 +10,7 @@ import { PatrolRunStore } from '../flutter/patrol-store.ts';
 import { LocalWorkspaceStore } from '../local-workspace.ts';
 import { CloudUploadQueue } from './cloud-upload-queue.ts';
 import { FolderTestLibrary } from './folder-test-library.ts';
-import { parseTestFile, serializeTestFile } from './test-file-format.ts';
+import { dartSuiteFolderName, moveDartImports, parseTestFile, serializeTestFile } from './test-file-format.ts';
 import { TestStorage } from './test-storage.ts';
 import { TestStorageSettingsStore } from './test-storage-settings.ts';
 
@@ -172,6 +172,67 @@ test('Patrol folder tests sync into the Patrol store and non-Patrol files are fl
 });
 
 const patrolSource = (label: string) => `import 'package:patrol/patrol.dart';\nvoid main(){ patrolTest('${label}', ($) async {}); }\n`;
+const shopTest = (helper: string) => `import 'package:patrol/patrol.dart';\nimport '${helper}';\nvoid main(){ patrolTest('cart', ($) async {}); }\n`;
+
+test('Dart suite folders and moved Dart files keep import paths working', () => {
+  assert.equal(dartSuiteFolderName('Cart flows'), 'Cart_flows');
+  assert.equal(dartSuiteFolderName('  Košarica & plaćanje '), 'Kosarica_placanje');
+  assert.throws(() => dartSuiteFolderName('!!!'), /letter or digit/);
+  const source = "import 'package:patrol/patrol.dart';\nimport 'dart:io';\nimport 'support/shop.dart' as shop;\nexport \"../lib/fixtures.dart\";\npart 'cart_part.dart';\n// import 'not/a/directive.dart';\n";
+  const inCart = moveDartImports(source, 'patrol_test/cart_test.dart', 'patrol_test/Cart/cart_test.dart');
+  assert.equal(inCart, "import 'package:patrol/patrol.dart';\nimport 'dart:io';\nimport '../support/shop.dart' as shop;\nexport \"../../lib/fixtures.dart\";\npart '../cart_part.dart';\n// import 'not/a/directive.dart';\n");
+  // Between suites at the same depth only a file next to the test is reached differently.
+  assert.equal(moveDartImports("import 'helper.dart';\n" + inCart, 'patrol_test/Cart/cart_test.dart', 'patrol_test/PDP/cart_test.dart'), "import '../Cart/helper.dart';\n" + inCart);
+  assert.equal(moveDartImports(source, 'patrol_test/a_test.dart', 'patrol_test/b_test.dart'), source);
+});
+
+test('a Flutter project keeps its tests in its patrol_test/, where Patrol runs each file as it is', async () => {
+  const { root, folder, patrolTests, storage, scope } = await fixture();
+  try {
+    const tests = path.join(folder, 'patrol_test');
+    await writeFile(path.join(folder, 'pubspec.yaml'), 'name: shop\n');
+    await mkdir(path.join(tests, 'support'), { recursive: true });
+    await writeFile(path.join(tests, 'support', 'shop.dart'), 'void launch() {}\n');
+    await writeFile(path.join(tests, 'cart_test.dart'), shopTest('support/shop.dart'));
+    // Choosing the project folder means its patrol_test/.
+    await storage.configure(scope, { mode: 'folder', targetType: 'flutter', directory: folder });
+    assert.deepEqual((await storage.settingsView(scope)).folder, { label: 'patrol_test', displayPath: tests, available: true });
+    assert.equal(storage.inPlaceRoot(scope), tests);
+    const [cart] = (await storage.library(scope)).tests;
+    assert.equal(cart.relativePath, 'cart_test.dart');
+    assert.equal(patrolTests.versions(scope.projectId, scope.organizationId, cart.id)[0].relativePath, 'patrol_test/cart_test.dart');
+
+    // A suite is a folder Dart can import from, read back with its spaces; the helper folder is no suite.
+    const suite = await storage.saveSuite({ ...scope, suiteId: 'suite_new', expectedRevision: 0, name: 'Cart flows', testIds: [] });
+    assert.equal(suite.name, 'Cart flows');
+    await storage.moveTest({ ...scope, testId: cart.id, targetSuiteId: suite.id });
+    const moved = parseTestFile(await readFile(path.join(tests, 'Cart_flows', 'cart_test.dart'), 'utf8'));
+    assert.equal(moved.header.id, cart.id);
+    assert.equal(moved.source, shopTest('../support/shop.dart'));
+    assert.deepEqual((await storage.library(scope)).suites.map((item) => [item.name, item.testIds]), [['Cart flows', [cart.id]]]);
+    assert.deepEqual((await readdir(tests)).sort(), ['Cart_flows', 'support']);
+    // Runs use the moved file itself; no copy is left at the old path.
+    const latest = patrolTests.versions(scope.projectId, scope.organizationId, cart.id)[0];
+    assert.deepEqual([latest.relativePath, latest.source], ['patrol_test/Cart_flows/cart_test.dart', moved.source]);
+
+    // A generated test lands in Just_Recorded/ and still reaches the helpers it was written against.
+    const generated = await patrolTests.saveTest({ ...scope, title: 'Receipt total', relativePath: 'patrol_test/receipt_test.dart', source: shopTest('support/shop.dart'), recordingCaptureId: 'capture_one' });
+    await storage.savePatrolTest(generated);
+    const file = parseTestFile(await readFile(path.join(tests, 'Just_Recorded', 'receipt_total_test.dart'), 'utf8'));
+    assert.deepEqual([file.source, file.header.entrypoint], [shopTest('../support/shop.dart'), undefined]);
+    assert.equal(patrolTests.versions(scope.projectId, scope.organizationId, generated.id)[0].relativePath, 'patrol_test/Just_Recorded/receipt_total_test.dart');
+    const library = await storage.library(scope);
+    assert.deepEqual(library.suites.map((item) => [item.name, Boolean(item.sourceRecordingId)]), [['Cart flows', false], ['Just Recorded', true]]);
+    assert.deepEqual((await storage.export(scope)).tests.map((item) => item.suite).sort(), ['Cart flows', 'Just Recorded']);
+    await assert.rejects(storage.moveTest({ ...scope, testId: cart.id, targetSuiteId: library.suites[1].id }), /cannot be moved into a Just Recorded suite/);
+
+    // Choosing patrol_test/ itself means the same folder; a folder outside a Flutter project keeps its tests as they are.
+    await storage.configure(scope, { mode: 'folder', targetType: 'flutter', directory: tests });
+    assert.equal(storage.inPlaceRoot(scope), tests);
+    await storage.configure(scope, { mode: 'folder', targetType: 'flutter', directory: root });
+    assert.equal(storage.inPlaceRoot(scope), undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test('SaySpec Cloud Flutter tests saved here wait in the upload queue until the renderer uploads them', async () => {
   const { root, patrolTests, cloudUploads, storage, scope } = await fixture();

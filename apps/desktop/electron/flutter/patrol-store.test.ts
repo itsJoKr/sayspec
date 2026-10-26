@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { PatrolRunConsoleEvent } from '@sayspec/contracts';
 import { PatrolRunStore } from './patrol-store.ts';
-import { assertSafeTestPath, PatrolRunner } from './patrol-runner.ts';
+import { assertSafeTestPath, PatrolRunner, readStoredTest } from './patrol-runner.ts';
 import { FailureAnalysisManager } from '../execution/failure-analysis.ts';
+import { serializeTestFile } from '../test-storage/test-file-format.ts';
 
 const source = (title: string) => `// SAYSPEC_GENERATED\nimport 'package:patrol/patrol.dart';\nvoid main(){ patrolTest('${title}', (\$) async {}); }\n`;
 
@@ -21,10 +23,14 @@ test('Patrol publication appends immutable versions and reopens exact source and
     assert.equal(store.listTests('project_one', 'local')[0].versionId, second.versionId);
     const duplicate = await store.saveTest({ testId: second.id, projectId: 'project_one', organizationId: 'local', title: 'Changed title', relativePath: second.relativePath, source: second.source, dependencies: { patrol: '0.0.0' }, validationAttemptId: 'patrol_attempt_other', state: 'generated' });
     assert.deepEqual(duplicate, second, 'duplicate publication must retain immutable metadata');
+    // The same source in another file (a test moved to a suite) is what runs from now on.
+    const moved = await store.saveTest({ testId: second.id, projectId: 'project_one', organizationId: 'local', title: 'Receipt', relativePath: 'patrol_test/Cart/receipt_test.dart', source: second.source });
+    assert.deepEqual([moved.version, moved.relativePath, moved.state], [3, 'patrol_test/Cart/receipt_test.dart', 'published']);
+    assert.equal(store.listTests('project_one', 'local')[0].versionId, moved.versionId);
     const attempt = { schemaVersion: 1, id: 'patrol_attempt_one', testId: first.id, versionId: first.versionId, projectId: 'project_one', organizationId: 'local', testContentHash: first.contentHash, runtime: { deviceId: 'emulator-5554', deviceName: 'Slim', platform: 'android', entrypoint: first.relativePath, testFileHashes: { [first.relativePath]: first.contentHash }, environmentHash: 'e'.repeat(64) }, state: 'failed', deviceId: 'emulator-5554', leaseId: 'lease_one', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), summary: 'Failed', detail: 'Expected v1', passed: 0, failed: 1, skipped: 0, tests: [], artifacts: [], runner: 'desktop-local-patrol' } as const;
     await store.recordAttempt(attempt);
     const reopened = new PatrolRunStore(root); await reopened.initialize();
-    assert.equal(reopened.versions('project_one', 'local', first.id).length, 2);
+    assert.equal(reopened.versions('project_one', 'local', first.id).length, 3);
     assert.equal(reopened.test(first.id, first.versionId).contentHash, first.contentHash);
     assert.equal(reopened.attempt(attempt.id)?.versionId, first.versionId);
     assert.equal(reopened.attempt(attempt.id)?.detail, 'Expected v1');
@@ -67,6 +73,21 @@ test('Patrol materialization refuses symbolic-link paths before writing', async 
     await symlink(path.join(outside, 'target.dart'), path.join(root, 'patrol_test', 'receipt_test.dart'));
     await assert.rejects(assertSafeTestPath(root, 'patrol_test/receipt_test.dart'), /symbolic link/);
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+test('a test stored in patrol_test/ runs from its own file, header included, and is never written over', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sayspec-patrol-stored-'));
+  try {
+    const body = source('cart');
+    const file = path.join(root, 'patrol_test', 'Cart', 'cart_test.dart');
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, serializeTestFile({ id: 'test_cart', title: 'Cart', steps: [] }, body));
+    const stored = { relativePath: 'patrol_test/Cart/cart_test.dart', contentHash: createHash('sha256').update(body).digest('hex') };
+    assert.equal(await readStoredTest(root, stored), await readFile(file, 'utf8'));
+    await assert.rejects(readStoredTest(root, { ...stored, contentHash: createHash('sha256').update(source('older')).digest('hex') }), /changed after this version was saved/);
+    await assert.rejects(readStoredTest(root, { ...stored, relativePath: 'patrol_test/cart_test.dart' }), /no longer in the project/);
+    assert.equal(await readFile(file, 'utf8'), serializeTestFile({ id: 'test_cart', title: 'Cart', steps: [] }, body));
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('failed Patrol source and artifacts produce a cited durable application analysis', async () => {

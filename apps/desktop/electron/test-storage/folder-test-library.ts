@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isSafeRelativePath, type LibraryTest, type TestSuite } from '@sayspec/contracts';
-import { fileTestId, isTestFile, isValidTestId, parseTestFile, serializeTestFile, suiteFolderName, suiteIdFor, testFileStem, testFileSuffix, type TestFileHeader, type TestFileStep, type TestFramework } from './test-file-format.ts';
+import { dartSuiteFolderName, fileTestId, isTestFile, isValidTestId, moveDartImports, parseTestFile, serializeTestFile, suiteFolderName, suiteIdFor, testFileStem, testFileSuffix, type TestFileHeader, type TestFileStep, type TestFramework } from './test-file-format.ts';
 
 export const JUST_RECORDED = 'Just Recorded';
 const SKIPPED_FOLDERS = new Set(['node_modules', 'build', 'dist', 'test-results', 'playwright-report']);
@@ -35,14 +35,29 @@ export interface FolderTestWrite {
  * repository. Every top-level folder is a suite; tests at the root are
  * unassigned. Metadata lives in each file's header, so there is no index to
  * keep in sync and a teammate's `git pull` is picked up on the next scan.
+ *
+ * A Flutter project's tests are kept in its patrol_test/ (`inPlace`), where
+ * patrol_cli runs each file as it is: suite folders are named for Dart import
+ * paths ("Cart flows" is Cart_flows/), and a test that changes folders keeps
+ * its relative imports working.
  */
 export class FolderTestLibrary {
   readonly root: string;
   readonly framework: TestFramework;
+  /** The folder is a Flutter project's patrol_test/, so its files are the tests Patrol runs. */
+  readonly inPlace: boolean;
   readonly #createIfMissing: boolean;
 
-  /** `createIfMissing` is for a folder SaySpec owns (Local storage); a folder the user chose must already exist. */
-  constructor(root: string, framework: TestFramework, options: { createIfMissing?: boolean } = {}) { this.root = path.resolve(root); this.framework = framework; this.#createIfMissing = options.createIfMissing ?? false; }
+  /** `createIfMissing` is for a folder SaySpec owns (Local storage) or a Flutter project's patrol_test/; any other folder the user chose must already exist. */
+  constructor(root: string, framework: TestFramework, options: { createIfMissing?: boolean; inPlace?: boolean } = {}) { this.root = path.resolve(root); this.framework = framework; this.inPlace = options.inPlace ?? false; this.#createIfMissing = options.createIfMissing ?? false; }
+
+  /** The suite a folder stands for: in patrol_test/, Cart_flows/ reads as "Cart flows". */
+  suiteName(folder: string) { return this.inPlace ? folder.replaceAll('_', ' ') : folder; }
+
+  #folderFor(name: string) { return this.inPlace ? dartSuiteFolderName(name) : suiteFolderName(name); }
+
+  /** A test file's path in the Flutter project, for a file in patrol_test/. */
+  #projectPath(relativePath: string) { return `patrol_test/${relativePath}`; }
 
   async available() {
     if (this.#createIfMissing) await mkdir(this.root, { recursive: true });
@@ -88,11 +103,12 @@ export class FolderTestLibrary {
     return {
       folderTests: tests,
       tests: tests.map((test) => ({ id: test.id, projectId, title: test.title, status: 'generated', createdAt: test.createdAt, relativePath: test.relativePath, ...(test.header.recording ? { recordingId: test.header.recording } : {}), ...(test.header.author ? { authorLabel: authorLabel(test.header.author) } : {}) })),
-      suites: suites.map((name) => {
-        const members = tests.filter((test) => test.suite === name);
+      suites: suites.map((folder) => {
+        const members = tests.filter((test) => test.suite === folder);
+        const name = this.suiteName(folder);
         // The renderer treats a named "Just Recorded" suite with a source recording as the staging area for fresh tests.
         const recording = name === JUST_RECORDED ? members.find((test) => test.header.recording)?.header.recording ?? 'folder' : undefined;
-        return { id: suiteIdFor(name), projectId, name, testIds: members.map((test) => test.id), revision: 1, updatedAt, ...(recording ? { sourceRecordingId: recording } : {}) };
+        return { id: suiteIdFor(folder), projectId, name, testIds: members.map((test) => test.id), revision: 1, updatedAt, ...(recording ? { sourceRecordingId: recording } : {}) };
       }),
     };
   }
@@ -123,21 +139,23 @@ export class FolderTestLibrary {
     const existing = tests.find((test) => test.id === input.id) ?? (input.recordingId ? tests.find((test) => test.header.recording === input.recordingId) : undefined);
     const now = new Date().toISOString();
     let relativePath: string; let header: TestFileHeader;
-    if (existing) {
-      relativePath = existing.relativePath;
-      header = { ...existing.header, id: existing.id, author: existing.header.author || input.author, entrypoint: input.entrypoint ?? existing.header.entrypoint, recording: existing.header.recording ?? input.recordingId, steps: [...(input.steps ?? existing.header.steps)] };
-      if (existing.source !== input.source) header.updated = now;
-    } else {
-      const folder = input.suite ? suiteFolderName(input.suite) : '';
+    if (existing) relativePath = existing.relativePath;
+    else {
+      const folder = input.suite ? this.#folderFor(input.suite) : '';
       if (folder) await mkdir(path.join(this.root, folder), { recursive: true });
       relativePath = await this.#freeName(folder, testFileStem(input.title, this.framework));
-      header = { id: input.id, title: input.title.trim(), author: input.author, created: input.created && !Number.isNaN(Date.parse(input.created)) ? input.created : now, recording: input.recordingId, entrypoint: input.entrypoint, steps: [...(input.steps ?? [])] };
     }
-    const body = serializeTestFile(header, input.source);
+    // In patrol_test/ the file is its own entrypoint: source written for another file there reaches its imports from this one.
+    const source = this.inPlace && input.entrypoint ? moveDartImports(input.source, input.entrypoint, this.#projectPath(relativePath)) : input.source;
+    if (existing) {
+      header = { ...existing.header, id: existing.id, author: existing.header.author || input.author, entrypoint: this.inPlace ? undefined : input.entrypoint ?? existing.header.entrypoint, recording: existing.header.recording ?? input.recordingId, steps: [...(input.steps ?? existing.header.steps)] };
+      if (existing.source !== source) header.updated = now;
+    } else header = { id: input.id, title: input.title.trim(), author: input.author, created: input.created && !Number.isNaN(Date.parse(input.created)) ? input.created : now, recording: input.recordingId, entrypoint: this.inPlace ? undefined : input.entrypoint, steps: [...(input.steps ?? [])] };
+    const body = serializeTestFile(header, source);
     // Saving the same version again must not touch the file, or it shows up as a change in git.
-    if (!existing || existing.source !== input.source || JSON.stringify(existing.header) !== JSON.stringify(header)) await atomicWrite(path.join(this.root, relativePath), body);
+    if (!existing || existing.source !== source || JSON.stringify(existing.header) !== JSON.stringify(header)) await atomicWrite(path.join(this.root, relativePath), body);
     if (input.supportFiles) await this.#writeSupportFiles(existing?.id ?? input.id, input.supportFiles);
-    return { id: existing?.id ?? input.id, title: header.title || existing?.title || input.title, header, source: input.source, relativePath, suite: relativePath.includes('/') ? relativePath.split('/')[0] : null, createdAt: header.created ?? now };
+    return { id: existing?.id ?? input.id, title: header.title || existing?.title || input.title, header, source, relativePath, suite: relativePath.includes('/') ? relativePath.split('/')[0] : null, createdAt: header.created ?? now };
   }
 
   /** Renames the test's title and its file, so the folder stays readable in a git diff. */
@@ -162,7 +180,7 @@ export class FolderTestLibrary {
 
   /** Creates a suite folder, or renames the one behind `suiteId`. */
   async saveSuite(input: { projectId: string; suiteId: string; name: string }): Promise<TestSuite> {
-    const name = suiteFolderName(input.name);
+    const name = this.#folderFor(input.name);
     const { suites, tests } = await this.scan();
     const current = suites.find((folder) => suiteIdFor(folder) === input.suiteId);
     if (current !== name) {
@@ -171,7 +189,7 @@ export class FolderTestLibrary {
       if (current) await rename(path.join(this.root, current), path.join(this.root, name));
       else { await mkdir(path.join(this.root, name)); await writeFile(path.join(this.root, name, '.gitkeep'), ''); }
     }
-    return { id: suiteIdFor(name), projectId: input.projectId, name, testIds: tests.filter((test) => test.suite === (current ?? name)).map((test) => test.id), revision: 1, updatedAt: new Date().toISOString() };
+    return { id: suiteIdFor(name), projectId: input.projectId, name: this.suiteName(name), testIds: tests.filter((test) => test.suite === (current ?? name)).map((test) => test.id), revision: 1, updatedAt: new Date().toISOString() };
   }
 
   /** Deletes an empty suite's folder. A folder with tests or other files in it stays. */
@@ -184,7 +202,7 @@ export class FolderTestLibrary {
 
   /** Makes sure a suite folder exists, keeping an existing one (and its tests) as it is. */
   async ensureSuite(name: string) {
-    const folder = suiteFolderName(name);
+    const folder = this.#folderFor(name);
     const existing = (await readdir(this.root, { withFileTypes: true })).find((entry) => entry.isDirectory() && entry.name.toLowerCase() === folder.toLowerCase());
     if (existing) return existing.name;
     await mkdir(path.join(this.root, folder)); await writeFile(path.join(this.root, folder, '.gitkeep'), '');
@@ -198,9 +216,13 @@ export class FolderTestLibrary {
     const target = suiteId === null ? null : suites.find((folder) => suiteIdFor(folder) === suiteId);
     if (suiteId !== null && !target) throw new Error('The destination suite was not found.');
     if (target === test.suite) return;
-    if (target === JUST_RECORDED) throw new Error('Tests cannot be moved into a Just Recorded suite.');
+    if (target && this.suiteName(target) === JUST_RECORDED) throw new Error('Tests cannot be moved into a Just Recorded suite.');
     const relativePath = await this.#freeName(target ?? '', path.posix.basename(test.relativePath).slice(0, -testFileSuffix(this.framework).length));
-    await rename(path.join(this.root, test.relativePath), path.join(this.root, relativePath));
+    if (this.inPlace) {
+      // The file's imports follow it, and its ID goes with it in the header so its runs stay its own.
+      await atomicWrite(path.join(this.root, relativePath), serializeTestFile({ ...test.header, id: test.id }, moveDartImports(test.source, this.#projectPath(test.relativePath), this.#projectPath(relativePath))));
+      await unlink(path.join(this.root, test.relativePath));
+    } else await rename(path.join(this.root, test.relativePath), path.join(this.root, relativePath));
     await this.#pruneJustRecorded();
   }
 
@@ -243,7 +265,7 @@ export class FolderTestLibrary {
   }
 
   /** "Just Recorded" only stages fresh tests, so its folder goes away once it holds none. */
-  async #pruneJustRecorded() { await this.#removeEmptyFolder(JUST_RECORDED); }
+  async #pruneJustRecorded() { await this.#removeEmptyFolder(this.#folderFor(JUST_RECORDED)); }
 
   /** Removes a suite folder that holds nothing but placeholders, and resolves to whether it did. */
   async #removeEmptyFolder(name: string) {

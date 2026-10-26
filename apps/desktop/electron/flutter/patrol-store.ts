@@ -73,9 +73,10 @@ export class PatrolRunStore {
     if (input.source.length > 512 * 1024) throw new Error('The Patrol test source exceeds the 512 KiB budget.');
     const existing = this.#tests.filter((test) => test.projectId === input.projectId && test.organizationId === input.organizationId && (input.testId ? test.id === input.testId : test.relativePath === input.relativePath)).sort((left, right) => right.version - left.version)[0];
     const contentHash = createHash('sha256').update(input.source).digest('hex');
-    // Repeated publication of the same bytes is idempotent. Its provenance,
-    // dependency pins and validating attempt belong to the original version.
-    if (existing?.contentHash === contentHash) return structuredClone(existing);
+    // Repeated publication of the same bytes at the same path is idempotent. Its
+    // provenance, dependency pins and validating attempt belong to the original
+    // version. A test moved to another file is a new version, so runs use that file.
+    if (existing?.contentHash === contentHash && existing.relativePath === input.relativePath) return structuredClone(existing);
     const test: PatrolSavedTest = {
       schemaVersion: 1,
       id: input.testId ?? existing?.id ?? `patrol_test_${randomUUID()}`,

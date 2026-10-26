@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 
 /**
  * Tests kept in a storage folder carry their metadata in a comment header, so a
@@ -80,6 +81,34 @@ export function suiteFolderName(name: string) {
   const cleaned = name.replace(/[/\\:\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120).trim();
   if (!cleaned) throw new Error('Suite name is required.');
   return cleaned;
+}
+
+/**
+ * A suite's folder inside a Flutter project's patrol_test/. The folder is part
+ * of a Dart import path there, so words are joined by `_` and anything but
+ * letters, digits, `_` and `-` is dropped: "Cart flows" becomes Cart_flows.
+ */
+export function dartSuiteFolderName(name: string) {
+  const cleaned = suiteFolderName(name).normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '_').replace(/[^A-Za-z0-9_-]/g, '').replace(/_+/g, '_').replace(/^[_-]+|[_-]+$/g, '');
+  if (!cleaned) throw new Error('A Flutter suite name needs a letter or digit.');
+  return cleaned;
+}
+
+const DART_DIRECTIVE = /^(\s*(?:import|export|part(?:\s+of)?)\s+)(['"])([^'"]+)\2/gm;
+
+/**
+ * Dart source moved from `from` to `to` (both relative to the project), with
+ * its relative imports, exports and parts rewritten to reach the same files
+ * from the new folder. `package:` and `dart:` URIs stay as they are.
+ */
+export function moveDartImports(source: string, from: string, to: string) {
+  const fromFolder = path.posix.dirname(`/${from}`); const toFolder = path.posix.dirname(`/${to}`);
+  if (fromFolder === toFolder) return source;
+  return source.replace(DART_DIRECTIVE, (directive, keyword: string, quote: string, uri: string) => {
+    if (uri.includes(':') || uri.startsWith('/')) return directive;
+    const moved = path.posix.relative(toFolder, path.posix.join(fromFolder, uri));
+    return `${keyword}${quote}${moved}${quote}`;
+  });
 }
 
 export const suiteIdFor = (folderName: string) => `suite_${createHash('sha256').update(folderName).digest('hex').slice(0, 24)}`;

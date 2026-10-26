@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import type { SavedWebTestStore } from '../execution/saved-web-tests.ts';
 import type { PatrolRunStore } from '../flutter/patrol-store.ts';
 import type { CloudUploadQueue } from './cloud-upload-queue.ts';
 import { FolderTestLibrary, JUST_RECORDED, type FolderTest } from './folder-test-library.ts';
-import { isTestFile } from './test-file-format.ts';
+import { isTestFile, type TestFramework } from './test-file-format.ts';
 import type { TestStorageSettingsStore } from './test-storage-settings.ts';
 import { INSTRUCTIONS_FILE, carryInstructions, type InstructionsLocation } from './test-instructions.ts';
 
@@ -91,22 +92,26 @@ export class TestStorage {
    * be, so switching to Local keeps it. Undefined when the storage folder is unknown.
    */
   instructionsLocation(scope: TestLibraryScope): InstructionsLocation | undefined {
-    if (this.mode(scope) === 'folder') { const directory = this.#settings.get(scope.projectId)?.directory; return directory ? { directory, createIfMissing: false } : undefined; }
+    if (this.mode(scope) === 'folder') { const folder = this.#folder(scope.projectId); return folder ? { directory: folder.root, createIfMissing: folder.inPlace } : undefined; }
     try { return { directory: this.#localDirectory(scope), createIfMissing: true }; } catch { return undefined; }
   }
 
   async forget(projectId: string) { await this.#settings.forget(projectId); }
 
   async settingsView(scope: TestLibraryScope): Promise<TestStorageSettings> {
-    const entry = this.#settings.get(scope.projectId);
     const mode = this.mode(scope);
-    if (mode !== 'folder' || !entry?.directory) return { projectId: scope.projectId, mode };
-    const available = await stat(entry.directory).then((value) => value.isDirectory(), () => false);
-    return { projectId: scope.projectId, mode, folder: { label: path.basename(entry.directory), displayPath: displayPath(entry.directory), available } };
+    const folder = mode === 'folder' ? this.#folder(scope.projectId) : undefined;
+    if (!folder) return { projectId: scope.projectId, mode };
+    // A Flutter project's patrol_test/ is created with its first test.
+    const available = folder.inPlace || await stat(folder.root).then((value) => value.isDirectory(), () => false);
+    return { projectId: scope.projectId, mode, folder: { label: path.basename(folder.root), displayPath: displayPath(folder.root), available } };
   }
 
   /** The folder behind Folder storage, for Show in Finder. */
-  folderPath(projectId: string) { const entry = this.#settings.get(projectId); return entry?.mode === 'folder' ? entry.directory : undefined; }
+  folderPath(projectId: string) { return this.#settings.get(projectId)?.mode === 'folder' ? this.#folder(projectId)?.root : undefined; }
+
+  /** The patrol_test/ folder holding the project's tests when Patrol runs them right where they are stored, or undefined. */
+  inPlaceRoot(scope: TestLibraryScope) { const backend = this.#backend(scope); return backend.kind === 'files' && backend.library.inPlace ? backend.library.root : undefined; }
 
   async library(scope: TestLibraryScope): Promise<TestLibrarySnapshot> {
     const backend = this.#backend(scope);
@@ -188,7 +193,7 @@ export class TestStorage {
   async savePatrolTest(test: PatrolSavedTest) {
     const backend = this.#backend(test);
     if (backend.kind === 'missing-folder') throw new Error(MISSING_FOLDER);
-    if (backend.kind === 'files') await backend.library.write({ id: test.id, title: test.title, source: test.source, author: await this.#author(backend.library.root), recordingId: test.recordingCaptureId, entrypoint: test.relativePath, suite: JUST_RECORDED });
+    if (backend.kind === 'files') await this.#writePatrol(backend.library, test, JUST_RECORDED);
     else if (backend.kind === 'guest') await this.#localWorkspace.saveGeneratedTest({ projectId: test.projectId, recordingId: test.recordingCaptureId!, title: test.title, folder: 'Generated tests', tags: ['flutter', 'patrol'], status: 'generated', versionCount: test.version, testId: test.id });
     else await this.#cloudUploads.add({ organizationId: test.organizationId, projectId: test.projectId, testId: test.id, versionId: test.versionId });
   }
@@ -201,8 +206,14 @@ export class TestStorage {
   async savePatrolVersion(test: PatrolSavedTest) {
     const backend = this.#backend(test);
     if (backend.kind === 'missing-folder') throw new Error(MISSING_FOLDER);
-    if (backend.kind === 'files') await backend.library.write({ id: test.id, title: test.title, source: test.source, author: await this.#author(backend.library.root), recordingId: test.recordingCaptureId, entrypoint: test.relativePath, suite: null });
+    if (backend.kind === 'files') await this.#writePatrol(backend.library, test, null);
     else if (backend.kind === 'cloud') await this.#cloudUploads.add({ organizationId: test.organizationId, projectId: test.projectId, testId: test.id, versionId: test.versionId });
+  }
+
+  async #writePatrol(library: FolderTestLibrary, test: PatrolSavedTest, suite: string | null) {
+    const written = await library.write({ id: test.id, title: test.title, source: test.source, author: await this.#author(library.root), recordingId: test.recordingCaptureId, entrypoint: test.relativePath, suite });
+    // In patrol_test/ the file just written is what runs, so it is the test's version from now on.
+    if (library.inPlace) await this.#sync({ organizationId: test.organizationId, projectId: test.projectId }, library, [written]);
   }
 
   /** Flutter tests saved on this Mac that SaySpec Cloud does not hold yet, each at its latest version. */
@@ -281,7 +292,7 @@ export class TestStorage {
     if (backend.kind === 'files') {
       const { suites, folderTests } = await backend.library.snapshot(scope.projectId);
       await this.#sync(scope, backend.library, folderTests);
-      return { suites: suites.map((suite) => suite.name), tests: folderTests.map((test) => this.#portable(scope, { id: test.id, title: test.title, suite: test.suite, createdAt: test.createdAt, recordingId: test.header.recording, authorLabel: test.header.author })) };
+      return { suites: suites.map((suite) => suite.name), tests: folderTests.map((test) => this.#portable(scope, { id: test.id, title: test.title, suite: test.suite && backend.library.suiteName(test.suite), createdAt: test.createdAt, recordingId: test.header.recording, authorLabel: test.header.author })) };
     }
     const { tests, suites } = await this.library(scope);
     return { suites: suites.map((suite) => suite.name), tests: tests.map((test) => this.#portable(scope, { id: test.id, title: test.title, suite: suites.find((suite) => suite.testIds.includes(test.id))?.name ?? null, createdAt: test.createdAt, recordingId: test.recordingId })) };
@@ -299,10 +310,10 @@ export class TestStorage {
     if (target.mode === 'local' && scope.organizationId === 'local') return this.#importIntoGuest(scope, library, needsSource, result);
     const directory = target.mode === 'folder' ? target.directory ?? this.#settings.get(scope.projectId)?.directory : this.#localDirectory(scope);
     if (!directory) throw new Error('Choose a folder for this project’s tests.');
-    const destination = new FolderTestLibrary(directory, framework, { createIfMissing: target.mode === 'local' });
+    const destination = target.mode === 'folder' ? folderLibrary(directory, framework) : new FolderTestLibrary(directory, framework, { createIfMissing: true });
     if (!await destination.available()) throw new Error('The chosen folder is unavailable.');
     for (const name of library.suites) if (name !== JUST_RECORDED) await destination.ensureSuite(name);
-    const author = await this.#author(directory);
+    const author = await this.#author(destination.root);
     for (const test of library.tests) {
       try {
         if (!needsSource(test)) throw new Error('Its source is not on this Mac.');
@@ -360,12 +371,19 @@ export class TestStorage {
   #backend(scope: TestLibraryScope): Backend {
     const entry = this.#settings.get(scope.projectId);
     const mode = this.mode(scope);
-    const framework = (entry?.targetType ?? this.#localWorkspace.snapshot().projects.find((project) => project.id === scope.projectId)?.targetType) === 'flutter' ? 'patrol' : 'playwright';
-    if (mode === 'folder') return entry?.directory ? { kind: 'files', library: new FolderTestLibrary(entry.directory, framework) } : { kind: 'missing-folder' };
+    const framework = this.#framework(scope.projectId);
+    if (mode === 'folder') return entry?.directory ? { kind: 'files', library: folderLibrary(entry.directory, framework) } : { kind: 'missing-folder' };
     if (mode === 'cloud') return { kind: 'cloud' };
     if (scope.organizationId === 'local') return { kind: 'guest' };
     return { kind: 'files', library: new FolderTestLibrary(this.#localDirectory(scope), framework, { createIfMissing: true }) };
   }
+
+  #framework(projectId: string): TestFramework {
+    return (this.#settings.get(projectId)?.targetType ?? this.#localWorkspace.snapshot().projects.find((project) => project.id === projectId)?.targetType) === 'flutter' ? 'patrol' : 'playwright';
+  }
+
+  /** Where Folder storage keeps the project's tests on this machine, or undefined when the folder is unknown. */
+  #folder(projectId: string) { const directory = this.#settings.get(projectId)?.directory; return directory ? storageFolder(directory, this.#framework(projectId)) : undefined; }
 
   /** Local storage for a signed-in project: a folder SaySpec keeps, in the same format as Folder storage. */
   #localDirectory(scope: TestLibraryScope) {
@@ -403,7 +421,8 @@ export class TestStorage {
           const support = (await library.supportFiles(test.id)).filter((file) => file.relativePath !== entrypoint);
           await this.#webTests.saveFolderVersion({ ...scope, testId: test.id, title: test.title, recordingId: test.header.recording, entrypoint, files: [{ relativePath: entrypoint, text: test.source }, ...support], steps: test.header.steps });
         } else {
-          const relativePath = test.header.entrypoint && /^patrol_test\/[A-Za-z0-9_./-]+\.dart$/.test(test.header.entrypoint) ? test.header.entrypoint : `patrol_test/${fileName}`;
+          // A file in the project's patrol_test/ runs where it is; a file kept elsewhere is written into patrol_test/ for each run.
+          const relativePath = library.inPlace ? `patrol_test/${test.relativePath}` : test.header.entrypoint && /^patrol_test\/[A-Za-z0-9_./-]+\.dart$/.test(test.header.entrypoint) ? test.header.entrypoint : `patrol_test/${fileName}`;
           await this.#patrolTests.saveTest({ ...scope, testId: test.id, title: test.title, relativePath, source: test.source, ...(test.header.recording ? { recordingCaptureId: test.header.recording } : {}) });
         }
       } catch (error) { issues.set(test.id, error instanceof Error ? error.message : 'This file cannot be run by SaySpec.'); }
@@ -418,6 +437,22 @@ export class TestStorage {
   }
 }
 
+
+/**
+ * Where Folder storage keeps tests in the folder the user chose. A Flutter
+ * project's tests are its patrol_test/, where patrol_cli runs each file as it
+ * is, so choosing the project folder (or that patrol_test/) means that folder.
+ */
+function storageFolder(directory: string, framework: TestFramework) {
+  if (framework === 'patrol' && existsSync(path.join(directory, 'pubspec.yaml'))) return { root: path.join(directory, 'patrol_test'), inPlace: true };
+  if (framework === 'patrol' && path.basename(directory) === 'patrol_test' && existsSync(path.join(directory, '..', 'pubspec.yaml'))) return { root: directory, inPlace: true };
+  return { root: directory, inPlace: false };
+}
+
+function folderLibrary(directory: string, framework: TestFramework) {
+  const { root, inPlace } = storageFolder(directory, framework);
+  return new FolderTestLibrary(root, framework, { inPlace, createIfMissing: inPlace });
+}
 
 function displayPath(directory: string) {
   const home = os.homedir();
