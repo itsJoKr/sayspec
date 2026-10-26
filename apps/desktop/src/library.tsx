@@ -113,9 +113,11 @@ function CreateRunDialog({ open, selectedCount, busy, baseUrlBusy, baseUrl, erro
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function LibraryHeader({ selectedCount, canCreateRun = true, canMove, onCreateRun, onMove, onCreateSuite }: { selectedCount: number; canCreateRun?: boolean; canMove: boolean; onCreateRun: () => void; onMove: () => void; onCreateSuite: () => void }) {
-  return <div className="library-header"><div><p>Keep related tests together in suites. Select tests to build a run or move them to a suite, or select a suite to pick everything inside it.</p></div><div className="library-header__actions"><Button variant="secondary" onClick={onCreateSuite}>New suite</Button></div>
-    {selectedCount > 0 && (canMove || canCreateRun) && <TopbarActions>{canMove && <Button data-testid="move-selected-tests" variant="secondary" onClick={onMove}>Move to suite <span className="button-count">({selectedCount})</span></Button>}{canCreateRun && <Button data-testid="create-test-run" variant="primary" onClick={onCreateRun}>Create Test Run <span className="button-count">({selectedCount})</span></Button>}</TopbarActions>}</div>;
+/** The page header's actions: adding tests and suites, or, once tests are selected, what to do with the selection. */
+function LibraryActions({ selectedCount, canSelectAll, canCreateRun = true, canMove, onSelectAll, onCreateSuite, onRecord, onCreateRun, onMove }: { selectedCount: number; canSelectAll: boolean; canCreateRun?: boolean; canMove: boolean; onSelectAll: () => void; onCreateSuite: () => void; onRecord: () => void; onCreateRun: () => void; onMove: () => void }) {
+  if (!selectedCount) return <TopbarActions>{canSelectAll && <Button onClick={onSelectAll}>Select all</Button>}{canMove && <Button onClick={onCreateSuite}>New suite</Button>}<Button data-testid="record-test" onClick={onRecord}>Record test</Button></TopbarActions>;
+  if (!canMove && !canCreateRun) return null;
+  return <TopbarActions>{canMove && <Button data-testid="move-selected-tests" variant="secondary" onClick={onMove}>Move to suite <span className="button-count">({selectedCount})</span></Button>}{canCreateRun && <Button data-testid="create-test-run" variant="primary" onClick={onCreateRun}>Create Test Run <span className="button-count">({selectedCount})</span></Button>}</TopbarActions>;
 }
 
 function suiteForTest(testId: string, suites: TestSuite[]) { return suites.find((suite) => suite.testIds.includes(testId))?.id ?? null; }
@@ -192,7 +194,7 @@ export function TestLibrary({ repository, reviewScope, currentUser, canManage, c
   const paged = repository.page > 0 || repository.hasNext;
   // A storage folder in a repository: changed test files can be committed from here. Refreshes as the library changes.
   const gitKey = JSON.stringify([tests.map((test) => [test.id, test.title]), suites.map((suite) => [suite.id, suite.testIds])]);
-  return <section className="test-library" aria-label="Test library"><LibraryHeader selectedCount={selectedIds.size} canCreateRun={canCreateRun} canMove={canManage} onMove={() => openMove([...selectedIds], true)} onCreateRun={() => onCreateDeviceRun ? onCreateDeviceRun([...selectedIds]) : void openCreateRun()} onCreateSuite={() => { setDialogError(''); setSuiteDialog({ mode: 'create' }); }} />
+  return <section className="test-library" aria-label="Test library"><LibraryActions selectedCount={selectedIds.size} canSelectAll={tests.length > 0} canCreateRun={canCreateRun} canMove={canManage} onSelectAll={() => setSelectedIds(new Set(tests.map((test) => test.id)))} onCreateSuite={() => { setDialogError(''); setSuiteDialog({ mode: 'create' }); }} onRecord={onRecord} onMove={() => openMove([...selectedIds], true)} onCreateRun={() => onCreateDeviceRun ? onCreateDeviceRun([...selectedIds]) : void openCreateRun()} />
     {repository.kind === 'folder' && <GitChangesBar target={{ kind: 'tests', organizationId: reviewScope.organizationId, projectId: reviewScope.projectId }} refreshKey={gitKey} />}
     {repository.status === 'error' ? <StatePanel tone="error" title={repository.kind === 'folder' ? 'Test folder unavailable' : 'Tests unavailable'} action={<Button onClick={repository.reload}>Try again</Button>}>{repository.kind === 'folder' ? 'Check that the folder under Settings → Test storage still exists, then retry.' : 'Check your workspace access, then retry.'}</StatePanel>
       : repository.status === 'loading' && !tests.length ? <div className="library-loading" role="status">Loading tests…</div>
