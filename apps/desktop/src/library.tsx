@@ -16,8 +16,8 @@ const isJustRecordedSuite = (suite: TestSuite) => Boolean(suite.sourceRecordingI
 type TestRow = { id: string; title: string; author: string; issue?: string };
 type ResolveRunBaseUrl = (testIds: string[]) => Promise<string>;
 type CreateRunHandler = (testIds: string[], name: string, baseUrl: string) => Promise<void>;
-/** Flutter runs need no name or base URL: the selection goes straight to the device runner. */
-type DeviceRunHandler = (testIds: string[]) => void;
+/** Flutter runs need no base URL: the device is chosen when the run is started. */
+type DeviceRunHandler = (testIds: string[], name: string) => Promise<void>;
 
 function defaultRunName() {
   const now = new Date();
@@ -105,11 +105,12 @@ function MoveTestsDialog({ title, count, currentSuiteId, createdSuiteId, suites,
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function CreateRunDialog({ open, selectedCount, busy, baseUrlBusy, baseUrl, error, onOpenChange, onBaseUrlChange, onSubmit }: { open: boolean; selectedCount: number; busy: boolean; baseUrlBusy: boolean; baseUrl: string; error: string; onOpenChange: (open: boolean) => void; onBaseUrlChange: (value: string) => void; onSubmit: (name: string, baseUrl: string) => void }) {
+/** Names a run of the selected tests; a Web run also needs the base URL it runs against. Creating it freezes its tests. */
+function CreateRunDialog({ open, selectedCount, askBaseUrl, busy, baseUrlBusy, baseUrl, error, onOpenChange, onBaseUrlChange, onSubmit }: { open: boolean; selectedCount: number; askBaseUrl: boolean; busy: boolean; baseUrlBusy: boolean; baseUrl: string; error: string; onOpenChange: (open: boolean) => void; onBaseUrlChange: (value: string) => void; onSubmit: (name: string, baseUrl: string) => void }) {
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); onSubmit(String(form.get('name') ?? '').trim(), String(form.get('baseUrl') ?? '').trim()); }
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content" aria-describedby="create-run-dialog-description">
-    <Dialog.Title>Create test run</Dialog.Title><Dialog.Description id="create-run-dialog-description">Create a saved run containing {selectedCount} selected {selectedCount === 1 ? 'test' : 'tests'}. You can start it from the Runs tab.</Dialog.Description>
-    <form className="rename-form" onSubmit={submit}><Field name="name" label="Run name" defaultValue={defaultRunName()} autoFocus required /><Field name="baseUrl" label="Web base URL" type="url" value={baseUrl} onChange={(event) => onBaseUrlChange(event.target.value)} placeholder="https://example.com" hint={baseUrlBusy ? 'Loading the URL from the selected recording…' : 'Uses the selected recording’s starting URL when available, otherwise the project Settings URL. You can change it for this run.'} required />{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><Dialog.Close asChild><Button type="button">Cancel</Button></Dialog.Close><Button type="submit" variant="primary" disabled={busy || baseUrlBusy}>{busy ? 'Creating…' : 'Create Test Run'}</Button></div></form>
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content" aria-describedby="field-run-name-help">
+    <Dialog.Title>Create run</Dialog.Title>
+    <form className="rename-form" onSubmit={submit}><Field name="name" label="Run name" defaultValue={defaultRunName()} maxLength={120} hint={`${selectedCount} ${selectedCount === 1 ? 'test' : 'tests'}`} autoFocus required />{askBaseUrl && <Field name="baseUrl" label="Web base URL" type="url" value={baseUrl} onChange={(event) => onBaseUrlChange(event.target.value)} placeholder="https://example.com" hint={baseUrlBusy ? 'Loading the URL from the selected recording…' : 'Uses the selected recording’s starting URL when available, otherwise the project Settings URL. You can change it for this run.'} required />}{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><Dialog.Close asChild><Button type="button">Cancel</Button></Dialog.Close><Button type="submit" variant="primary" disabled={busy || baseUrlBusy}>{busy ? 'Creating…' : 'Create run'}</Button></div></form>
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
@@ -176,15 +177,18 @@ export function TestLibrary({ repository, reviewScope, currentUser, canManage, c
   }
   async function deleteTest(testId: string) { setActionError(''); try { await repository.deleteTest(testId); } catch (reason) { setActionError(messageOf(reason, 'The test could not be deleted. Check your access and try again.')); } }
   async function openCreateRun() {
-    setCreateRunError(''); setCreateRunOpen(true); setCreateRunBaseUrl(defaultBaseUrl); setCreateRunBaseUrlBusy(true);
+    setCreateRunError(''); setCreateRunOpen(true);
+    if (onCreateDeviceRun) return;
+    setCreateRunBaseUrl(defaultBaseUrl); setCreateRunBaseUrlBusy(true);
     try { setCreateRunBaseUrl(await resolveRunBaseUrl([...selectedIds])); }
     catch { setCreateRunBaseUrl(defaultBaseUrl); }
     finally { setCreateRunBaseUrlBusy(false); }
   }
   async function createRun(name: string, baseUrl: string) {
-    if (!name || !baseUrl || !selectedIds.size) return;
+    if (!name || (!onCreateDeviceRun && !baseUrl) || !selectedIds.size) return;
     setCreateRunBusy(true); setCreateRunError('');
-    try { await onCreateRun([...selectedIds], name, baseUrl); setSelectedIds(new Set()); setCreateRunOpen(false); }
+    const testIds = [...selectedIds];
+    try { await (onCreateDeviceRun ? onCreateDeviceRun(testIds, name) : onCreateRun(testIds, name, baseUrl)); setSelectedIds(new Set()); setCreateRunOpen(false); }
     catch (reason) { setCreateRunError(messageOf(reason, 'The test run could not be created.')); }
     finally { setCreateRunBusy(false); }
   }
@@ -194,14 +198,14 @@ export function TestLibrary({ repository, reviewScope, currentUser, canManage, c
   const paged = repository.page > 0 || repository.hasNext;
   // A storage folder in a repository: changed test files can be committed from here. Refreshes as the library changes.
   const gitKey = JSON.stringify([tests.map((test) => [test.id, test.title]), suites.map((suite) => [suite.id, suite.testIds])]);
-  return <section className="test-library" aria-label="Test library"><LibraryActions selectedCount={selectedIds.size} canSelectAll={tests.length > 0} canCreateRun={canCreateRun} canMove={canManage} onSelectAll={() => setSelectedIds(new Set(tests.map((test) => test.id)))} onCreateSuite={() => { setDialogError(''); setSuiteDialog({ mode: 'create' }); }} onRecord={onRecord} onMove={() => openMove([...selectedIds], true)} onCreateRun={() => onCreateDeviceRun ? onCreateDeviceRun([...selectedIds]) : void openCreateRun()} />
+  return <section className="test-library" aria-label="Test library"><LibraryActions selectedCount={selectedIds.size} canSelectAll={tests.length > 0} canCreateRun={canCreateRun} canMove={canManage} onSelectAll={() => setSelectedIds(new Set(tests.map((test) => test.id)))} onCreateSuite={() => { setDialogError(''); setSuiteDialog({ mode: 'create' }); }} onRecord={onRecord} onMove={() => openMove([...selectedIds], true)} onCreateRun={() => void openCreateRun()} />
     {repository.kind === 'folder' && <GitChangesBar target={{ kind: 'tests', organizationId: reviewScope.organizationId, projectId: reviewScope.projectId }} refreshKey={gitKey} />}
     {repository.status === 'error' ? <StatePanel tone="error" title={repository.kind === 'folder' ? 'Test folder unavailable' : 'Tests unavailable'} action={<Button onClick={repository.reload}>Try again</Button>}>{repository.kind === 'folder' ? 'Check that the folder under Settings → Test storage still exists, then retry.' : 'Check your workspace access, then retry.'}</StatePanel>
       : repository.status === 'loading' && !tests.length ? <div className="library-loading" role="status">Loading tests…</div>
         : !tests.length ? <StatePanel tone="empty" title="No tests yet" action={<Button variant="primary" onClick={onRecord}>Record your first test</Button>}>{repository.kind === 'folder' ? 'Record a walkthrough to make a test. It is saved as a file in your test folder.' : 'Record a walkthrough to make a test.'}</StatePanel>
           : <><SuiteList tests={rows} suites={suites} selectedIds={selectedIds} onToggleTest={toggleTest} onToggleSuite={toggleSuite} onOpen={setCodeId} canManage={canManage} deletingSuiteId={deletingSuiteId} onMove={canManage ? (id) => openMove([id], false) : undefined} onRenameSuite={(suite) => { setDialogError(''); setSuiteDialog({ mode: 'rename', suite }); }} onDeleteSuite={(suite) => void deleteSuite(suite)} onRenameTest={(id) => { setActionError(''); setRenameId(id); }} onDelete={(id) => void deleteTest(id)} onReview={repository.supportsReview ? setReviewId : undefined} emptyMessage={paged ? 'No tests from this suite are on this page.' : 'No tests in this suite yet.'} />{paged && <div className="pagination"><Button disabled={repository.page === 0} onClick={repository.previousPage}>Previous</Button><span>Page {repository.page + 1}</span><Button disabled={!repository.hasNext} onClick={repository.nextPage}>Next</Button></div>}</>}
     {renameTarget && <RenameDialog key={renameTarget.id} title={renameTarget.title} open onOpenChange={(open) => { if (!open) setRenameId(null); }} onSubmit={rename} error={actionError} />}
-    <CreateRunDialog key={`${reviewScope.projectId}-${selectedIds.size}`} open={createRunOpen} selectedCount={selectedIds.size} busy={createRunBusy} baseUrlBusy={createRunBaseUrlBusy} baseUrl={createRunBaseUrl} error={createRunError} onOpenChange={(open) => { if (!open) setCreateRunOpen(false); }} onBaseUrlChange={setCreateRunBaseUrl} onSubmit={(name, baseUrl) => void createRun(name, baseUrl)} />
+    <CreateRunDialog key={`${reviewScope.projectId}-${selectedIds.size}`} open={createRunOpen} selectedCount={selectedIds.size} askBaseUrl={!onCreateDeviceRun} busy={createRunBusy} baseUrlBusy={createRunBaseUrlBusy} baseUrl={createRunBaseUrl} error={createRunError} onOpenChange={(open) => { if (!open) setCreateRunOpen(false); }} onBaseUrlChange={setCreateRunBaseUrl} onSubmit={(name, baseUrl) => void createRun(name, baseUrl)} />
     {suiteDialog && <SuiteDialog mode={suiteDialog.mode} suite={suiteDialog.suite} open onOpenChange={(open) => { if (!open) setSuiteDialog(null); }} busy={busy} error={dialogError} onSubmit={(name) => void saveSuite(name)} />}
     {move && <MoveTestsDialog title={move.testIds.length === 1 ? tests.find((test) => test.id === move.testIds[0])?.title : undefined} count={move.testIds.length} currentSuiteId={sharedSuite(move.testIds, suites)} createdSuiteId={move.createdSuiteId} suites={suites} onOpenChange={(open) => { if (!open && !busy) setMove(null); }} busy={busy} error={dialogError} onSubmit={(destination) => void moveTests(destination)} />}
     {codeTarget && <TestCodeDialog key={codeTarget.id} title={codeTarget.title} load={() => repository.readCode(codeTarget.id)} onClose={() => setCodeId(null)} />}

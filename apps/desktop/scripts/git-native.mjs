@@ -99,7 +99,7 @@ try {
   await page.getByText('Imported as a new generated test.', { exact: false }).waitFor();
   await page.locator('nav button', { hasText: 'Tests' }).click();
   await page.locator('.test-table tbody input[type=checkbox]').first().check(); await page.getByTestId('create-test-run').click();
-  await page.getByRole('dialog').getByLabel('Web base URL').fill(baseUrl); await page.getByRole('dialog').getByRole('button', { name: 'Create Test Run' }).click();
+  await page.getByRole('dialog').getByLabel('Web base URL').fill(baseUrl); await page.getByRole('dialog').getByRole('button', { name: 'Create run' }).click();
   await page.getByRole('button', { name: 'Start test run' }).click();
   let first;
   for (let i = 0; i < 240; i++) { first = await page.evaluate(async () => { const ws = await window.sayspec.getLocalWorkspace(); const projectId = ws.projects[0].id; const version = (await window.sayspec.listProjectWebTestVersions({ organizationId: 'local', projectId }))[0]; const attempts = await window.sayspec.listSavedWebTestAttempts({ organizationId: 'local', projectId, testId: version.testId }); return { projectId, version, attempt: attempts[0] }; }); if (first?.attempt && !['preparing', 'running'].includes(first.attempt.state)) break; await page.waitForTimeout(500); }

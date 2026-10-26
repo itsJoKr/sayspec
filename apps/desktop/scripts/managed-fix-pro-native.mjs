@@ -74,7 +74,7 @@ try {
   await checkbox.check();
   await page.getByTestId('create-test-run').click();
   await page.getByRole('dialog').getByLabel('Web base URL').fill(baseUrl);
-  await page.getByRole('dialog').getByRole('button', { name: 'Create Test Run' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Create run' }).click();
   await page.locator('.run-detail-panel').waitFor({ timeout: 20_000 });
   await page.getByRole('button', { name: 'Start test run' }).click();
   for (let attempt = 0; attempt < 240; attempt += 1) {

@@ -97,13 +97,13 @@ function ItemStatus({ state }: { state: ItemState }) {
  * browser once written. The report's issues are listed with the run; an app
  * bug or a wrong test can be handed to a fix session from there (`onOpenFix`).
  *
- * Tests selected in the library arrive as `queuedTestIds` and preselect a new run.
+ * A run created from the library's selection arrives as `openRunId` and opens first.
  * With SaySpec Cloud storage (`cloudStorage`) the cloud's tests are pulled to
  * this Mac first; they still run here, never in the cloud.
  */
-export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], cloudStorage = false, source, onChooseSource, onOpenFix }: {
+export function PatrolRuns({ projectId, organizationId, openRunId, cloudStorage = false, source, onChooseSource, onOpenFix }: {
   projectId: string;
-  queuedTestIds?: string[];
+  openRunId?: string;
   organizationId: string;
   cloudStorage?: boolean;
   source?: LocalSourceSelection;
@@ -117,9 +117,9 @@ export function PatrolRuns({ projectId, organizationId, queuedTestIds = [], clou
   const [attempts, setAttempts] = useState<PatrolAttempt[]>([]);
   const [loaded, setLoaded] = useState(false);
   // '' is the New run view.
-  const [runId, setRunId] = useState<string | undefined>(queuedTestIds.length ? '' : undefined);
+  const [runId, setRunId] = useState<string | undefined>(openRunId);
   const [name, setName] = useState(defaultRunName);
-  const [picked, setPicked] = useState<string[]>(queuedTestIds);
+  const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<'results' | 'analysis'>('results');
