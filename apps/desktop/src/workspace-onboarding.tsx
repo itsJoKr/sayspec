@@ -92,13 +92,12 @@ export function JoinWorkspaceDialog({ flow }: { flow: JoinFlow }) {
 }
 
 /**
- * Members without owner/admin rights cannot create projects. Joining a
- * workspace grants its all-members projects only; restricted projects appear
- * after an owner/admin grants access. Nothing is broadened here.
+ * Members without owner/admin rights cannot create projects. Every project is
+ * shared with the whole workspace, so this shows only while it has none.
  */
 export function NoProjectAccess({ workspace }: { workspace: Scope }) {
   const organization = workspace.organizations.find((item) => item.id === workspace.organizationId);
-  return <div data-testid="no-project-access"><StatePanel tone="empty" title="No projects shared with you yet">
-    You are {organization?.role === 'editor' ? 'an Editor' : `a ${ROLE_LABEL[organization?.role ?? ''] ?? 'member'}`} in {organization?.name ?? 'this workspace'}. Projects shared with all members appear here automatically; restricted projects appear after an owner or admin gives you access. Joining a workspace does not open every project.
+  return <div data-testid="no-project-access"><StatePanel tone="empty" title="No projects yet">
+    You are {organization?.role === 'editor' ? 'an Editor' : `a ${ROLE_LABEL[organization?.role ?? ''] ?? 'member'}`} in {organization?.name ?? 'this workspace'}. Its projects appear here as soon as an owner or admin creates one.
   </StatePanel></div>;
 }

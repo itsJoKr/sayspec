@@ -76,7 +76,7 @@ export function useWorkspaceScope(authState: AuthState) {
       if (previous && previous === deletingProject.current && !next.some((project) => project.id === previous)) {
         deletingProject.current = '';
         setProjectId(next[0]?.id ?? ''); setStatus(next.length ? 'ready' : 'empty'); setProjectStatus(next.length ? 'ready' : 'empty');
-        setMessage(next.length ? '' : 'This organization has no projects available to your role.');
+        setMessage(next.length ? '' : 'This organization has no projects yet.');
       } else if (previous && !next.some((project) => project.id === previous)) {
         setProjectId(''); setStatus('revoked'); setProjectStatus('revoked');
         setMessage('Access to the active project was revoked. Its data and selections were cleared.');
@@ -84,7 +84,7 @@ export function useWorkspaceScope(authState: AuthState) {
         setProjectId(next[0].id); setStatus('ready'); setProjectStatus('ready'); setMessage('');
       } else {
         setStatus(next.length ? 'ready' : 'empty'); setProjectStatus(next.length ? 'ready' : 'empty');
-        if (!next.length) setMessage('This organization has no projects available to your role.');
+        if (!next.length) setMessage('This organization has no projects yet.');
       }
     }, () => {
       if (selectedOrganization.current !== organizationId) return;

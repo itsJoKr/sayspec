@@ -68,7 +68,7 @@ function ProjectCreationForm({ scope, onCreated, compact = false }: { scope: Sco
       if (storage === 'folder' && !storageFolder) throw new Error('Choose the folder where this project’s tests will be kept.');
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 64) || 'project';
       const projectId = `project_${slug}_${crypto.randomUUID().slice(0, 6)}`;
-      await cloud.projects.create({ organizationId: scope.organizationId, projectId, name, targetType: technology, ...(technology === 'web' ? { baseUrl } : {}), access: 'restricted', testStorage: storage });
+      await cloud.projects.create({ organizationId: scope.organizationId, projectId, name, targetType: technology, ...(technology === 'web' ? { baseUrl } : {}), access: 'all-members', testStorage: storage });
       await window.sayspec!.configureTestStorage({ organizationId: scope.organizationId, projectId, targetType: technology, mode: storage, ...(storage === 'folder' && storageFolder ? { folderHandle: storageFolder.handle } : {}) });
       onCreated(projectId, source); setName(''); setBaseUrl(''); setSource(null); setStorageChoice(null); setStorageFolder(null);
     } catch (reason) { setError(messageOf(reason)); }

@@ -90,7 +90,7 @@ try {
   await ownerPage.getByRole('meter', { name: 'Seats used' }).and(ownerPage.locator('[aria-valuetext="1 of 4 seats used"]')).waitFor();
   results.owner = { portalSignUp: true, workspace: orgId, codeShown: true };
 
-  // The owner uses the same identity in the desktop app and creates a restricted project there.
+  // The owner uses the same identity in the desktop app and creates a project there, shared with everyone in the workspace.
   step('desktop-owner-project');
   const ownerDesktop = await launchDesktop(await newProfile('owner')); desktops.push(ownerDesktop);
   await ownerDesktop.page.getByRole('button', { name: /^Sign in/ }).click();
@@ -98,20 +98,12 @@ try {
   await ownerDesktop.page.locator('.auth-form input[type=password]').fill(password);
   await ownerDesktop.page.locator('.auth-form button[type=submit]').click();
   await ownerDesktop.page.getByTestId('project-gate').waitFor({ timeout: 30_000 });
-  await ownerDesktop.page.getByLabel('Project name').fill('Private app');
-  await ownerDesktop.page.getByLabel('Base URL').fill('https://private.example.test/');
+  await ownerDesktop.page.getByLabel('Project name').fill('Team app');
+  await ownerDesktop.page.getByLabel('Base URL').fill('https://team.example.test/');
   await ownerDesktop.page.getByTestId('project-create').click();
   await ownerDesktop.page.getByTestId('onboarding-finish').click();
   await ownerDesktop.page.locator('nav').waitFor({ timeout: 30_000 });
-  // A project shared with all members (no desktop UI chooses all-members yet): same owner identity, real callable.
-  const ownerSdk = initializeClient({ apiKey: 'demo-api-key', authDomain: `${projectId}.firebaseapp.com`, projectId, appId: '1:1:web:demo' }, `owner-sdk-${run}`);
-  cleanup.push(() => deleteClient(ownerSdk));
-  const ownerAuth = getClientAuth(ownerSdk); connectAuthEmulator(ownerAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
-  const { signInWithEmailAndPassword } = await import('firebase/auth');
-  await signInWithEmailAndPassword(ownerAuth, email('owner'), password);
-  const ownerFunctions = getFunctions(ownerSdk, 'europe-west1'); connectFunctionsEmulator(ownerFunctions, '127.0.0.1', 5001);
-  await httpsCallable(ownerFunctions, 'projectCreate')({ organizationId: orgId, projectId: `project_team_${run}`, name: 'Team app', targetType: 'web', baseUrl: 'https://team.example.test/', access: 'all-members' });
-  results.ownerDesktop = 'same identity signed in; restricted project created in desktop';
+  results.ownerDesktop = 'same identity signed in; project created in desktop';
 
   // 2. A tester creates an account in the desktop app with the code (typed lowercase) and joins as Editor.
   step('desktop-tester-sign-up-join');
@@ -127,7 +119,7 @@ try {
   const testerMember = (await db.doc(`organizations/${orgId}/members/${testerUser.uid}`).get()).data();
   assert.deepEqual([testerMember.role, testerMember.joinedVia, testerMember.displayName], ['editor', 'join-code', 'Tess Tester']);
   assert.equal((await db.collection(`userScopes/${testerUser.uid}/organizations`).get()).size, 1, 'no personal workspace was created');
-  results.testerJoin = { role: 'editor', visibleProjects: projectOptions, restrictedHidden: true };
+  results.testerJoin = { role: 'editor', visibleProjects: projectOptions };
   await shot(tester.page, 'desktop-tester-joined');
 
   // 3. The portal shows the real identity and seat usage; the desktop survives a restart.
@@ -242,22 +234,21 @@ try {
   await assert.rejects(third.call('memberChange', { organizationId: orgId, uid: owner.uid, status: 'revoked' }), /permission|owner or admin/i);
   results.revocation = 'open desktop moved to the access-changed state; last owner protected';
 
-  // Joining another workspace from that screen: no project is shared yet, and the app explains why instead of broadening access.
+  // Joining another workspace from that screen: it has no project yet, and the app says who creates one.
   step('empty-project-access');
   const secondOwner = await sdkTester('second-owner');
   const secondOrg = `org_second_${run}`;
   await secondOwner.call('organizationCreate', { organizationId: secondOrg, name: 'Second Team (synthetic)' });
-  await secondOwner.call('projectCreate', { organizationId: secondOrg, projectId: `project_restricted_${run}`, name: 'Restricted app', targetType: 'web', baseUrl: 'https://restricted.example.test/', access: 'restricted' });
   await secondOwner.call('joinCodeRotate', { organizationId: secondOrg });
   const secondCode = (await db.doc(`organizations/${secondOrg}/private/joinCode`).get()).data().code; // read back only; the owner sees it in the portal
   const revokedForm = tester.page.getByTestId('join-workspace-form');
   await revokedForm.getByLabel('Company code').fill(secondCode);
   await revokedForm.getByRole('button', { name: 'Join workspace' }).click();
   await tester.page.getByTestId('no-project-access').waitFor({ timeout: 30_000 });
-  assert.match(await tester.page.getByTestId('no-project-access').innerText(), /an Editor in Second Team \(synthetic\)[\s\S]*does not open every project/);
+  assert.match(await tester.page.getByTestId('no-project-access').innerText(), /an Editor in Second Team \(synthetic\)[\s\S]*as soon as an owner or admin creates one/);
   assert.equal(await tester.page.getByTestId('project-create').count(), 0);
   await shot(tester.page, 'desktop-editor-no-projects');
-  results.emptyProjectAccess = 'joined a second workspace from the access-changed screen; restricted project hidden with an explanation';
+  results.emptyProjectAccess = 'joined a second workspace from the access-changed screen; no project yet, with who creates one';
 
   const finalOrg = (await db.doc(`organizations/${orgId}`).get()).data();
   assert.deepEqual(finalOrg.plan, { kind: 'free', seatLimit: 4 });

@@ -74,7 +74,7 @@ export interface CloudWorkspaces {
 }
 
 export interface CloudProjects {
-  create(input: ProjectRef & { name: string; targetType: 'web' | 'flutter'; baseUrl?: string; access: 'restricted' | 'all-members'; testStorage: TestStorageMode }): Promise<void>;
+  create(input: ProjectRef & { name: string; targetType: 'web' | 'flutter'; baseUrl?: string; access: 'all-members'; testStorage: TestStorageMode }): Promise<void>;
   /** Changes a Web project's base URL for the whole team. */
   setBaseUrl(input: ProjectRef & { baseUrl: string }): Promise<void>;
   /** Deletes the project for everyone, with its tests, versions, runs and shared recordings. */
